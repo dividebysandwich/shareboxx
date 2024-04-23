@@ -32,7 +32,7 @@ pub fn get_file_list() -> Result<Vec<String>, String> {
     log!("Current directory: {:?}", std::env::current_dir());
     let files = std::fs::read_dir("./files")
         .map_err(|e| format!("Error reading directory: {:?}", e))?;
-    let file_entries = files
+    let file_entries : Vec<String> = files
         .filter_map(|entry| {
             match entry {
                 Ok(entry) => entry.file_name().into_string().ok(),
@@ -43,21 +43,30 @@ pub fn get_file_list() -> Result<Vec<String>, String> {
             }
         })
         .collect();
-    log!("Files: {:?}", file_entries);
+    log!("Found {} files: {:?}", file_entries.len(), file_entries);
     Ok(file_entries)
 }
 
 #[component]
 pub fn FileListView() -> impl IntoView {
-    let files_value = get_file_list();
-    view! {
-        <ul>
-            {
-                files_value.into_iter()
-                    .map(|n| view! { <li>{n}</li>})
-                    .collect_view()
+    //let files_value = get_file_list();
+    match get_file_list() {
+        Ok(files) => {
+            view! {
+                <ul>
+                    {
+                        files.into_iter()
+                            .map(|n| view! { <li>{n}</li>})
+                            .collect_view()
+                    }
+                </ul>
             }
-        </ul>
+        },
+        Err(_e) => {
+            view! {
+                <ul><li>"Error: {_e}"</li></ul>
+            }
+        }
     }
 
 }
