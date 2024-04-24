@@ -1,4 +1,4 @@
-use leptos::{logging::log, *};
+use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
 
@@ -9,6 +9,7 @@ pub fn App() -> impl IntoView {
     provide_meta_context();
 
     view! {
+        <Html attr:data-bs-theme="dark"/>
         // injects a stylesheet into the document <head>
         // id=leptos means cargo-leptos will hot-reload this stylesheet
         <Stylesheet id="leptos" href="/pkg/shareboxx.css"/>
@@ -28,45 +29,101 @@ pub fn App() -> impl IntoView {
     }
 }
 
-pub fn get_file_list() -> Result<Vec<String>, String> {
-    log!("Current directory: {:?}", std::env::current_dir());
-    let files = std::fs::read_dir("./files")
-        .map_err(|e| format!("Error reading directory: {:?}", e))?;
+#[server(GetFileList)]
+pub async fn get_file_list(
+    path : String
+) -> Result<Vec<String>, ServerFnError> {
+    let base_path = std::env::current_dir()
+    .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+    let path_to_read = base_path.join("files").join(path);
+    logging::log!("Current directory: {:?}", path_to_read.clone());
+    let files = std::fs::read_dir(path_to_read)
+        .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
     let file_entries : Vec<String> = files
         .filter_map(|entry| {
             match entry {
                 Ok(entry) => entry.file_name().into_string().ok(),
                 Err(e) => {
-                    log!("Error reading file entry: {:?}", e);
-                    None
+                    Some(format!("Error reading file entry: {:?}", e).to_string())
                 },
             }
         })
         .collect();
-    log!("Found {} files: {:?}", file_entries.len(), file_entries);
+    logging::log!("Found {} files: {:?}", file_entries.len(), file_entries);
     Ok(file_entries)
 }
 
 #[component]
-pub fn FileListView() -> impl IntoView {
-    //let files_value = get_file_list();
-    match get_file_list() {
-        Ok(files) => {
-            view! {
-                <ul>
-                    {
-                        files.into_iter()
-                            .map(|n| view! { <li>{n}</li>})
-                            .collect_view()
-                    }
-                </ul>
-            }
+pub fn FileListComponent() -> impl IntoView {
+    let (path, set_path) = create_signal("".to_string());
+    // our resource
+    let directory_listing = create_resource(
+        path,
+        // every time `count` changes, this will run
+        |value| async move {
+            logging::log!("loading data from API for path {:?}", value);
+            get_file_list(value).await
         },
-        Err(_e) => {
-            view! {
-                <ul><li>"Error: {_e}"</li></ul>
+    );
+
+    let directory_listing_result = move || {
+//        let loading_vec = vec!["Loading...".to_string()];
+        directory_listing
+            .read()
+    };
+
+    // the resource's loading() method gives us a
+    // signal to indicate whether it's currently loading
+    let loading = directory_listing.loading();
+    let is_loading = move || if loading() { "Loading..." } else { "" };
+    view! {
+        <div>
+            Path: {path.clone()}<br/>
+            {is_loading}
+            <div class="list-group">
+            {
+                match directory_listing_result() {
+                    Some(result) => {
+                        match result {
+                            Ok(files) => {
+                                files.into_iter()
+                                .map(move |n| {
+                                    let n_clone = &n.clone();
+                                    view! { 
+                                        <a href="#" rel="external" on:click=move |ev| {
+                                            ev.prevent_default();
+                                            set_path(n.clone());
+                                        } class="list-group-item list-group-item-action">{n_clone}</a>
+                                    }
+                                })
+                                .collect_view()        
+                            }
+                            Err(_e) => {
+                                leptos::View::Text(view! {
+                                    "Error! {_e}"
+                                })
+                            }
+                        }
+                    }
+                    None => {
+                        leptos::View::Text(view! {
+                            "Error: No results found.   "
+                        })
+                    }
+                }
+                
+                // directory_listing_result.into_iter()
+                //     .map(move |n| {
+                //         let n_clone = &n.clone();
+                //         view! { <a href="#" rel="external" on:click=move |ev| {
+                //             ev.prevent_default();
+                //             set_path(n.clone());
+                //         } class="list-group-item list-group-item-action">{n_clone}</a>}
+                //     })
+                //     .collect_view()
             }
-        }
+            </div>
+        </div>
     }
 
 }
@@ -76,9 +133,8 @@ pub fn FileListView() -> impl IntoView {
 fn HomePage() -> impl IntoView {
     view! {
         <h1>"Welcome to ShareBoxx!"</h1>
-        Files:<br/>
         <br/>
-        <FileListView/>
+        <FileListComponent/>
     }
 }
 

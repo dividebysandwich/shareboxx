@@ -1,0 +1,13 @@
+[Unit]
+Description=Raspi Access Point Server Service
+After=network.target
+
+[Service]
+WorkingDirectory=/shareboxx
+ExecStart=/usr/bin/shareboxx
+Restart=on-failure
+RestartSec=10
+Environment=PORT=3000
+
+[Install]
+WantedBy=multi-user.target
