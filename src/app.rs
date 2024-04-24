@@ -102,14 +102,19 @@ pub fn FileListComponent() -> impl IntoView {
                                 Ok(files) => {
                                     files.into_iter()
                                     .map(move |n| {
-                                        let (_file_type_clone, file_name_clone) = &n.clone();
+                                        let (file_type_clone, file_name_clone) = &n.clone();
+                                        let path_value_clone = path.clone().get();
+                                        let mut link_target: String = "#".to_string();
+                                        if file_type_clone.clone() == "f" {
+                                            link_target = format!("/files/{}/{}", path_value_clone, file_name_clone.clone()).to_string();
+                                        }
                                         view! { 
-                                            <a href="#" rel="external" on:click=move |ev| {
-                                                ev.prevent_default();
+                                            <a href={link_target} rel="external" on:click=move |ev| {
                                                 let path_value = path.get();
                                                 let (file_type, file_name) = n.clone();
                                                 // If path is "..", remove the last directory from the path
                                                 if file_name == ".." {
+                                                    ev.prevent_default();
                                                     let mut path_clone = path_value.clone();
                                                     let mut path_parts: Vec<&str> = path_clone.split("/").collect();
                                                     path_parts.pop();
@@ -122,6 +127,7 @@ pub fn FileListComponent() -> impl IntoView {
                                                 } else {
                                                     // if file_type is a directory, append it to the path
                                                     if file_type == "d" {
+                                                        ev.prevent_default();
                                                         let mut path_clone = path_value.clone();
                                                         path_clone.push_str(file_name.clone().as_str());
                                                         path_clone.push_str("/");
