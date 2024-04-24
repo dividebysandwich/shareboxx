@@ -35,7 +35,7 @@ pub async fn get_file_list(
 ) -> Result<Vec<String>, ServerFnError> {
     let base_path = std::env::current_dir()
     .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
-    let path_to_read = base_path.join("files").join(path);
+    let path_to_read = base_path.join("files").join(path.clone());
     logging::log!("Current directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
         .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
@@ -49,7 +49,16 @@ pub async fn get_file_list(
             }
         })
         .collect();
-    logging::log!("Found {} files: {:?}", file_entries.len(), file_entries);
+    
+    //If path is not empty, prepend ".." to the list of files
+    if !path.is_empty() {
+        let mut new_files = Vec::new();
+        new_files.push("..".to_string());
+        new_files.extend(file_entries);
+        return Ok(new_files);
+    }
+
+//    logging::log!("Found {} files: {:?}", file_entries.len(), file_entries);
     Ok(file_entries)
 }
 
@@ -57,7 +66,7 @@ pub async fn get_file_list(
 pub fn FileListComponent() -> impl IntoView {
     let (path, set_path) = create_signal("".to_string());
     // our resource
-    let directory_listing = create_resource(
+    let directory_listing = create_local_resource(
         path,
         // every time `count` changes, this will run
         |value| async move {
@@ -65,12 +74,6 @@ pub fn FileListComponent() -> impl IntoView {
             get_file_list(value).await
         },
     );
-
-    let directory_listing_result = move || {
-//        let loading_vec = vec!["Loading...".to_string()];
-        directory_listing
-            .read()
-    };
 
     // the resource's loading() method gives us a
     // signal to indicate whether it's currently loading
@@ -82,45 +85,49 @@ pub fn FileListComponent() -> impl IntoView {
             {is_loading}
             <div class="list-group">
             {
-                match directory_listing_result() {
-                    Some(result) => {
-                        match result {
-                            Ok(files) => {
-                                files.into_iter()
-                                .map(move |n| {
-                                    let n_clone = &n.clone();
-                                    view! { 
-                                        <a href="#" rel="external" on:click=move |ev| {
-                                            ev.prevent_default();
-                                            set_path(n.clone());
-                                        } class="list-group-item list-group-item-action">{n_clone}</a>
-                                    }
-                                })
-                                .collect_view()        
-                            }
-                            Err(_e) => {
-                                leptos::View::Text(view! {
-                                    "Error! {_e}"
-                                })
+                move || { 
+                    match directory_listing.get() {
+                        Some(result) => {
+                            match result {
+                                Ok(files) => {
+                                    files.into_iter()
+                                    .map(move |n| {
+                                        let n_clone = &n.clone();
+                                        view! { 
+                                            <a href="#" rel="external" on:click=move |ev| {
+                                                ev.prevent_default();
+                                                let path_value = path.get();
+                                                // If path is "..", remove the last directory from the path
+                                                if n == ".." {
+                                                    let mut path_clone = path_value.clone();
+                                                    let mut path_parts: Vec<&str> = path_clone.split("/").collect();
+                                                    path_parts.pop();
+                                                    path_clone = path_parts.join("/");
+                                                    set_path(path_clone);
+                                                } else {
+                                                    let mut path_clone = path_value.clone();
+                                                    path_clone.push_str(n.clone().as_str());
+                                                    set_path(path_clone);
+                                                }
+                                            } class="list-group-item list-group-item-action">{n_clone}</a>
+                                        }
+                                    })
+                                    .collect_view()        
+                                }
+                                Err(_e) => {
+                                    leptos::View::Text(view! {
+                                        "Error! {_e}"
+                                    })
+                                }
                             }
                         }
-                    }
-                    None => {
-                        leptos::View::Text(view! {
-                            "Error: No results found.   "
-                        })
+                        None => {
+                            leptos::View::Text(view! {
+                                "Error: No results found.   "
+                            })
+                        }
                     }
                 }
-                
-                // directory_listing_result.into_iter()
-                //     .map(move |n| {
-                //         let n_clone = &n.clone();
-                //         view! { <a href="#" rel="external" on:click=move |ev| {
-                //             ev.prevent_default();
-                //             set_path(n.clone());
-                //         } class="list-group-item list-group-item-action">{n_clone}</a>}
-                //     })
-                //     .collect_view()
             }
             </div>
         </div>
