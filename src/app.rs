@@ -35,6 +35,10 @@ pub async fn get_file_list(
 ) -> Result<Vec<String>, ServerFnError> {
     let base_path = std::env::current_dir()
     .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+    //Check if path contains "..", if so, return an error
+    if path.contains("..") {
+        return Err(leptos::ServerFnError::ServerError("Path contains '..'".to_string()));
+    }
     let path_to_read = base_path.join("files").join(path.clone());
     logging::log!("Current directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
@@ -102,11 +106,16 @@ pub fn FileListComponent() -> impl IntoView {
                                                     let mut path_clone = path_value.clone();
                                                     let mut path_parts: Vec<&str> = path_clone.split("/").collect();
                                                     path_parts.pop();
+                                                    path_parts.pop();
                                                     path_clone = path_parts.join("/");
+                                                    if !path_clone.ends_with("/") && !path_clone.is_empty() {
+                                                        path_clone.push_str("/");
+                                                    }
                                                     set_path(path_clone);
                                                 } else {
                                                     let mut path_clone = path_value.clone();
                                                     path_clone.push_str(n.clone().as_str());
+                                                    path_clone.push_str("/");
                                                     set_path(path_clone);
                                                 }
                                             } class="list-group-item list-group-item-action">{n_clone}</a>
