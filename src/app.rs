@@ -32,7 +32,7 @@ pub fn App() -> impl IntoView {
 #[server(GetFileList)]
 pub async fn get_file_list(
     path : String
-) -> Result<Vec<String>, ServerFnError> {
+) -> Result<Vec<(String, String)>, ServerFnError> {
     let base_path = std::env::current_dir()
     .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
     //Check if path contains "..", if so, return an error
@@ -43,12 +43,18 @@ pub async fn get_file_list(
     logging::log!("Current directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
         .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
-    let file_entries : Vec<String> = files
+    let file_entries : Vec<(String, String)> = files
         .filter_map(|entry| {
             match entry {
-                Ok(entry) => entry.file_name().into_string().ok(),
+                Ok(entry) => {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        Some(("d".to_string(), entry.file_name().into_string().unwrap()))
+                    } else {
+                        Some(("f".to_string(), entry.file_name().into_string().unwrap()))
+                    }
+                },
                 Err(e) => {
-                    Some(format!("Error reading file entry: {:?}", e).to_string())
+                    Some(("f".to_string(), format!("Error reading file entry: {:?}", e).to_string().into()))
                 },
             }
         })
@@ -57,7 +63,7 @@ pub async fn get_file_list(
     //If path is not empty, prepend ".." to the list of files
     if !path.is_empty() {
         let mut new_files = Vec::new();
-        new_files.push("..".to_string());
+        new_files.push(("d".to_string(), "..".to_string()));
         new_files.extend(file_entries);
         return Ok(new_files);
     }
@@ -96,13 +102,14 @@ pub fn FileListComponent() -> impl IntoView {
                                 Ok(files) => {
                                     files.into_iter()
                                     .map(move |n| {
-                                        let n_clone = &n.clone();
+                                        let (_file_type_clone, file_name_clone) = &n.clone();
                                         view! { 
                                             <a href="#" rel="external" on:click=move |ev| {
                                                 ev.prevent_default();
                                                 let path_value = path.get();
+                                                let (file_type, file_name) = n.clone();
                                                 // If path is "..", remove the last directory from the path
-                                                if n == ".." {
+                                                if file_name == ".." {
                                                     let mut path_clone = path_value.clone();
                                                     let mut path_parts: Vec<&str> = path_clone.split("/").collect();
                                                     path_parts.pop();
@@ -113,12 +120,15 @@ pub fn FileListComponent() -> impl IntoView {
                                                     }
                                                     set_path(path_clone);
                                                 } else {
-                                                    let mut path_clone = path_value.clone();
-                                                    path_clone.push_str(n.clone().as_str());
-                                                    path_clone.push_str("/");
-                                                    set_path(path_clone);
+                                                    // if file_type is a directory, append it to the path
+                                                    if file_type == "d" {
+                                                        let mut path_clone = path_value.clone();
+                                                        path_clone.push_str(file_name.clone().as_str());
+                                                        path_clone.push_str("/");
+                                                        set_path(path_clone);
+                                                    }
                                                 }
-                                            } class="list-group-item list-group-item-action">{n_clone}</a>
+                                            } class="list-group-item list-group-item-action">{file_name_clone}</a>
                                         }
                                     })
                                     .collect_view()        

@@ -23,6 +23,7 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/pkg", format!("{site_root}/pkg")))
             // serve other assets from the `assets` directory
             .service(Files::new("/assets", site_root))
+            .service(Files::new("/files", "./files"))
             // serve the favicon from /favicon.ico
             .service(favicon)
             .leptos_routes(leptos_options.to_owned(), routes.to_owned(), App)
