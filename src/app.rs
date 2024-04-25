@@ -158,7 +158,7 @@ pub fn FileListComponent() -> impl IntoView {
             <br/>
             <div>
                 <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
-                    <input type="hidden" name="path" value={path.clone()}/>
+                    <input type="hidden" name="upload_path" value={path.clone()}/>
                     <input type="file" multiple name="file"/>
                     <button type="submit">Submit</button>
                 </form>            

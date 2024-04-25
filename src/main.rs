@@ -76,14 +76,16 @@ pub fn main() {
 struct UploadForm {
     #[multipart(rename = "file")]
     files: Vec<actix_multipart::form::tempfile::TempFile>,
+    upload_path: actix_multipart::form::text::Text<String>,
 }
 
 #[cfg(feature = "ssr")]
 async fn save_files(
     actix_multipart::form::MultipartForm(form): actix_multipart::form::MultipartForm<UploadForm>,
 ) -> Result<impl actix_web::Responder, actix_web::Error> {
+
     for f in form.files {
-        let path = format!("./files/{}", f.file_name.unwrap());
+        let path = format!("./files/{}{}", form.upload_path.clone(), f.file_name.unwrap());
         f.file.persist(path).unwrap();
     }
 
