@@ -155,6 +155,14 @@ pub fn FileListComponent() -> impl IntoView {
                 }
             }
             </div>
+            <br/>
+            <div>
+                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="path" value={path.clone()}/>
+                    <input type="file" multiple name="file"/>
+                    <button type="submit">Submit</button>
+                </form>            
+            </div>
         </div>
     }
 
@@ -167,6 +175,7 @@ fn HomePage() -> impl IntoView {
         <h1>"Welcome to ShareBoxx!"</h1>
         <br/>
         <FileListComponent/>
+        <br/>
     }
 }
 

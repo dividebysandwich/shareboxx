@@ -26,6 +26,9 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/files", "./files"))
             // serve the favicon from /favicon.ico
             .service(favicon)
+            // uploader
+            .service(web::resource("/upload").route(web::post().to(save_files)),
+            )
             .leptos_routes(leptos_options.to_owned(), routes.to_owned(), App)
             .app_data(web::Data::new(leptos_options.to_owned()))
         //.wrap(middleware::Compress::default())
@@ -65,4 +68,24 @@ pub fn main() {
     console_error_panic_hook::set_once();
 
     leptos::mount_to_body(App);
+}
+
+
+#[cfg(feature = "ssr")]
+#[derive(Debug, actix_multipart::form::MultipartForm)]
+struct UploadForm {
+    #[multipart(rename = "file")]
+    files: Vec<actix_multipart::form::tempfile::TempFile>,
+}
+
+#[cfg(feature = "ssr")]
+async fn save_files(
+    actix_multipart::form::MultipartForm(form): actix_multipart::form::MultipartForm<UploadForm>,
+) -> Result<impl actix_web::Responder, actix_web::Error> {
+    for f in form.files {
+        let path = format!("./files/{}", f.file_name.unwrap());
+        f.file.persist(path).unwrap();
+    }
+
+    Ok(actix_web::web::Redirect::to("/").see_other())
 }

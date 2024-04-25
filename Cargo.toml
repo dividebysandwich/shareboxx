@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 actix-files = { version = "0.6", optional = true }
 actix-web = { version = "4", optional = true, features = ["macros"] }
+actix-multipart = { version = "0.6.1", optional = true }
 console_error_panic_hook = "0.1"
 http = { version = "1.1.0", optional = true }
 leptos = { version = "0.6", features = ["nightly"] }
@@ -23,6 +24,7 @@ hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate"]
 ssr = [
   "dep:actix-files",
   "dep:actix-web",
+  "dep:actix-multipart",
   "dep:leptos_actix",
   "leptos/ssr",
   "leptos_meta/ssr",
