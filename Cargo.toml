@@ -91,3 +91,6 @@ lib-default-features = false
 #
 # Optional. Defaults to "release".
 lib-profile-release = "wasm-release"
+
+# Do not add content hashes to the frontend filenames
+frontend-files-content-hashes = false
