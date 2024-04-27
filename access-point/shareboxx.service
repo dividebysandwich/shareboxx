@@ -1,13 +1,17 @@
 [Unit]
-Description=Raspi Access Point Server Service
+Description=Shareboxx Service
 After=network.target
 
 [Service]
 WorkingDirectory=/shareboxx
-ExecStart=/usr/bin/shareboxx
+ExecStart=/usr/local/bin/shareboxx
 Restart=on-failure
-RestartSec=10
-Environment=PORT=3000
+RestartSec=1
+Environment=LEPTOS_OUTPUT_NAME=shareboxx
+Environment=LEPTOS_SITE_ROOT=/shareboxx/site
+Environment=LEPTOS_SITE_PKG_DIR=pkg
+Environment=LEPTOS_SITE_ADDR=0.0.0.1:3000
+Environment=LEPTOS_RELOAD_PORT=3001
 
 [Install]
 WantedBy=multi-user.target

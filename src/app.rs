@@ -40,7 +40,7 @@ pub async fn get_file_list(
         return Err(leptos::ServerFnError::ServerError("Path contains '..'".to_string()));
     }
     let path_to_read = base_path.join("files").join(path.clone());
-    logging::log!("Current directory: {:?}", path_to_read.clone());
+    //logging::log!("Listing directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
         .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
     let file_entries : Vec<(String, String)> = files
@@ -91,7 +91,20 @@ pub fn FileListComponent() -> impl IntoView {
     let is_loading = move || if loading() { "Loading..." } else { "" };
     view! {
         <div>
-            Path: {path.clone()}<br/>
+        <h2>Upload Files:</h2>
+            <div>
+                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="upload_path" value={path.clone()}/>
+                    <input type="file" multiple name="file"/>
+                    <button type="submit">Submit</button>
+                </form>            
+            </div>
+            <p/>
+            <br/>
+            <h2>Download Files:</h2>
+            Current Directory: {path.clone()}
+            <br/>
+            <p/>
             {is_loading}
             <div class="list-group">
             {
@@ -108,7 +121,7 @@ pub fn FileListComponent() -> impl IntoView {
                                         if file_type_clone.clone() == "f" {
                                             link_target = format!("/files/{}/{}", path_value_clone, file_name_clone.clone()).to_string();
                                         }
-                                        view! { 
+                                        view! {
                                             <a href={link_target} rel="external" on:click=move |ev| {
                                                 let path_value = path.get();
                                                 let (file_type, file_name) = n.clone();
@@ -134,7 +147,15 @@ pub fn FileListComponent() -> impl IntoView {
                                                         set_path(path_clone);
                                                     }
                                                 }
-                                            } class="list-group-item list-group-item-action">{file_name_clone}</a>
+                                            } class="list-group-item list-group-item-action">
+                                            <img src={if file_type_clone == "d" {"/assets/folder.png"} else {"/assets/file.png"}} style="width: 48px; height: 48px; margin-right: 10px"/>
+                                            {
+                                                if file_type_clone == "d" {
+                                                    format!("{}/", file_name_clone)
+                                                } else {
+                                                    format!("{}", file_name_clone)
+                                                }
+                                            }</a>
                                         }
                                     })
                                     .collect_view()        
@@ -155,14 +176,6 @@ pub fn FileListComponent() -> impl IntoView {
                 }
             }
             </div>
-            <br/>
-            <div>
-                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
-                    <input type="hidden" name="upload_path" value={path.clone()}/>
-                    <input type="file" multiple name="file"/>
-                    <button type="submit">Submit</button>
-                </form>            
-            </div>
         </div>
     }
 
@@ -174,6 +187,13 @@ fn HomePage() -> impl IntoView {
     view! {
         <h1>"Welcome to ShareBoxx!"</h1>
         <br/>
+        <div class="card">
+            <div class="card-body">
+                Shareboxx is a free offline fire sharing service. You can upload files and share them with others. <br/>
+                There is no internet connection and no logfiles. Note that executables are not checked for malware, so be careful what you download.<br/>
+            </div>
+        </div>
+        <p/>
         <FileListComponent/>
         <br/>
     }
