@@ -1,6 +1,8 @@
 # shareboxx
 An anonymous, disconnected local filesharing system over WiFi, similar to Piratebox and Librarybox, entirely written in Rust.
 
+![image](https://github.com/dividebysandwich/shareboxx/assets/23048489/10144b44-464c-4fc1-a3d5-bbd423c66048)
+
 ### What does it do?
 
 This software can turn your small linux computer or Raspberry Pi into an wireless anonymous offline local filesharing (WAOLF?) system. The idea is similar to the now-abandoned Piratebox, except Shareboxx does not have a large footprint of webservers and php script files. It's a single executable that does everything: Serving files, the web UI, and accepting uploads.
