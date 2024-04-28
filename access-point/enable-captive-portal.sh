@@ -12,7 +12,7 @@ systemctl stop hostapd
 
 # Raspberry Pi acts as router on wirless network
 # As it runs a DHCP Server, the Raspi needs a static IP address
-cat ./access-point/dhcpcd.conf | tee -a /etc/dhcpcd.conf > /dev/null
+cat dhcpcd.conf | tee -a /etc/dhcpcd.conf > /dev/null
 systemctl restart dhcpcd
 
 # --- Configure DHCP server (dnsmasq)
@@ -20,7 +20,7 @@ if test -f /etc/dnsmasq.conf; then
     # Backup file
     mv /etc/dnsmasq.conf /etc/dnsmasq.conf.orig
 fi
-cp ./access-point/dnsmasq.conf /etc/dnsmasq.conf
+cp dnsmasq.conf /etc/dnsmasq.conf
 
 # Don't let dnsmasq alter your /etc/resolv.conf file
 # https://raspberrypi.stackexchange.com/questions/37439/proper-way-to-prevent-dnsmasq-from-overwriting-dns-server-list-supplied-by-dhcp
@@ -46,7 +46,7 @@ netfilter-persistent save
 # --- Configure access point (hostapd)
 # Make sure wlan is not blocked on raspi
 rfkill unblock wlan
-cp ./access-point/hostapd.conf /etc/hostapd/hostapd.conf
+cp hostapd.conf /etc/hostapd/hostapd.conf
 systemctl unmask hostapd
 systemctl enable hostapd
 systemctl start hostapd
