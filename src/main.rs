@@ -3,6 +3,7 @@
 async fn main() -> std::io::Result<()> {
     use actix_files::Files;
     use actix_web::*;
+    use actix_multipart::form::MultipartFormConfig;
     use leptos::*;
     use leptos_actix::{generate_route_list, LeptosRoutes};
     use shareboxx::app::*;
@@ -18,6 +19,12 @@ async fn main() -> std::io::Result<()> {
         let site_root = &leptos_options.site_root;
 
         App::new()
+            .app_data(
+                MultipartFormConfig::default()
+                    .total_limit(10 * 1024 * 1024 * 1024) // 10 GB
+                    .memory_limit(10 * 1024 * 1024) // 10 MB
+                    .error_handler(handle_multipart_error),
+            )
             .route("/api/{tail:.*}", leptos_actix::handle_server_fns())
             // serve JS/WASM/CSS from `pkg`
             .service(Files::new("/pkg", format!("{site_root}/pkg")))
@@ -36,6 +43,23 @@ async fn main() -> std::io::Result<()> {
     .bind(&addr)?
     .run()
     .await
+}
+
+
+#[cfg(feature = "ssr")]
+use actix_web::Error;
+#[cfg(feature = "ssr")]
+use actix_web::HttpRequest;
+#[cfg(feature = "ssr")]
+use actix_multipart::MultipartError;
+#[cfg(feature = "ssr")]
+use leptos::*;
+
+
+#[cfg(feature = "ssr")]
+fn handle_multipart_error(err: MultipartError, req: &HttpRequest) -> Error {
+    logging::log!("Multipart error: {}", err);
+    return Error::from(err);
 }
 
 #[cfg(feature = "ssr")]
