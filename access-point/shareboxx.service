@@ -10,7 +10,7 @@ RestartSec=1
 Environment=LEPTOS_OUTPUT_NAME=shareboxx
 Environment=LEPTOS_SITE_ROOT=/shareboxx/site
 Environment=LEPTOS_SITE_PKG_DIR=pkg
-Environment=LEPTOS_SITE_ADDR=0.0.0.1:3000
+Environment=LEPTOS_SITE_ADDR=0.0.0.0:3000
 Environment=LEPTOS_RELOAD_PORT=3001
 
 [Install]
