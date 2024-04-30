@@ -40,7 +40,7 @@ pub async fn get_file_list(
         return Err(leptos::ServerFnError::ServerError("Path contains '..'".to_string()));
     }
     let path_to_read = base_path.join("files").join(path.clone());
-    //logging::log!("Listing directory: {:?}", path_to_read.clone());
+    logging::log!("Listing directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
         .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
     let file_entries : Vec<(String, String)> = files
@@ -190,7 +190,7 @@ fn HomePage() -> impl IntoView {
         <div class="card">
             <div class="card-body">
                 Shareboxx is a free offline fire sharing service. You can upload files and share them with others. <br/>
-                There is no internet connection and no logfiles. Note that executables are not checked for malware, so be careful what you download.<br/>
+                This is an local, anonymous service with no internet connection and no accounts. Note that executables are not checked for malware, so be careful what you download.<br/>
             </div>
         </div>
         <p/>
