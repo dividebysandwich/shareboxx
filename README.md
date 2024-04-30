@@ -24,5 +24,6 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 - Edit hostapd.conf and dnsmasq.conf to taste
 - Run ```sudo ./enable-captive-portal.sh```
 - Run ```sudo ./setup-server.sh```
+- Run ```sudo ./setup-ssl.sh```
 
 Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /shareboxx/files, or you can copy files onto a USB drive and mount that under /shareboxx/files for example.
