@@ -3,7 +3,7 @@
 async fn main() -> std::io::Result<()> {
     use actix_files::Files;
     use actix_web::*;
-    use actix_multipart::form::MultipartFormConfig;
+    use actix_multipart::form::{MultipartFormConfig, tempfile::TempFileConfig};
     use leptos::*;
     use leptos_actix::{generate_route_list, LeptosRoutes};
     use shareboxx::app::*;
@@ -38,6 +38,8 @@ async fn main() -> std::io::Result<()> {
             )
             .leptos_routes(leptos_options.to_owned(), routes.to_owned(), App)
             .app_data(web::Data::new(leptos_options.to_owned()))
+            // Store temp files on same drive, otherwise .persist() will fail due to cross-device link error
+            .app_data(TempFileConfig::default().directory("./files"))
         //.wrap(middleware::Compress::default())
     })
     .bind(&addr)?
@@ -57,7 +59,7 @@ use leptos::*;
 
 
 #[cfg(feature = "ssr")]
-fn handle_multipart_error(err: MultipartError, req: &HttpRequest) -> Error {
+fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
     logging::log!("Multipart error: {}", err);
     return Error::from(err);
 }
