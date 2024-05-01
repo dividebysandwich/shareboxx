@@ -1,3 +1,4 @@
+use fmtsize::{Conventional, FmtSize};
 use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
@@ -32,7 +33,7 @@ pub fn App() -> impl IntoView {
 #[server(GetFileList)]
 pub async fn get_file_list(
     path : String
-) -> Result<Vec<(String, String)>, ServerFnError> {
+) -> Result<Vec<(String, String, u64)>, ServerFnError> {
     let base_path = std::env::current_dir()
     .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
     //Check if path contains "..", if so, return an error
@@ -43,18 +44,21 @@ pub async fn get_file_list(
     logging::log!("Listing directory: {:?}", path_to_read.clone());
     let files = std::fs::read_dir(path_to_read)
         .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
-    let file_entries : Vec<(String, String)> = files
+    let file_entries : Vec<(String, String, u64)> = files
         .filter_map(|entry| {
             match entry {
                 Ok(entry) => {
                     if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        Some(("d".to_string(), entry.file_name().into_string().unwrap()))
+                        Some(("d".to_string(), entry.file_name().into_string().unwrap(), 0))
                     } else {
-                        Some(("f".to_string(), entry.file_name().into_string().unwrap()))
+                        //get the file size in bytes
+                        let metadata = entry.metadata().unwrap();
+                        let size = metadata.len();
+                        Some(("f".to_string(), entry.file_name().into_string().unwrap(), size))
                     }
                 },
                 Err(e) => {
-                    Some(("f".to_string(), format!("Error reading file entry: {:?}", e).to_string().into()))
+                    Some(("f".to_string(), format!("Error reading file entry: {:?}", e).to_string().into(), 0))
                 },
             }
         })
@@ -63,7 +67,7 @@ pub async fn get_file_list(
     //If path is not empty, prepend ".." to the list of files
     if !path.is_empty() {
         let mut new_files = Vec::new();
-        new_files.push(("d".to_string(), "..".to_string()));
+        new_files.push(("d".to_string(), "..".to_string(), 0));
         new_files.extend(file_entries);
         return Ok(new_files);
     }
@@ -115,16 +119,16 @@ pub fn FileListComponent() -> impl IntoView {
                                 Ok(files) => {
                                     files.into_iter()
                                     .map(move |n| {
-                                        let (file_type_clone, file_name_clone) = &n.clone();
+                                        let (file_type_clone, file_name_clone, file_size_clone) = &n.clone();
                                         let path_value_clone = path.clone().get();
                                         let mut link_target: String = "#".to_string();
                                         if file_type_clone.clone() == "f" {
                                             link_target = format!("/files/{}/{}", path_value_clone, file_name_clone.clone()).to_string();
                                         }
-                                        view! {
-                                            <a href={link_target} rel="external" on:click=move |ev| {
+                                        view!{
+                                        <a href={link_target} rel="external" on:click=move |ev| {
                                                 let path_value = path.get();
-                                                let (file_type, file_name) = n.clone();
+                                                let (file_type, file_name, _file_size) = n.clone();
                                                 // If path is "..", remove the last directory from the path
                                                 if file_name == ".." {
                                                     ev.prevent_default();
@@ -155,7 +159,17 @@ pub fn FileListComponent() -> impl IntoView {
                                                 } else {
                                                     format!("{}", file_name_clone)
                                                 }
-                                            }</a>
+                                            }
+                                            <span class="float-end">
+                                            {
+                                                if file_type_clone == "f" {
+                                                    format!("{} ", file_size_clone.fmt_size(Conventional))
+                                                } else {
+                                                    "".to_string()
+                                                }
+                                            }
+                                            </span>
+                                        </a>
                                         }
                                     })
                                     .collect_view()        
