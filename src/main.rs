@@ -48,7 +48,7 @@ async fn main() -> std::io::Result<()> {
             .leptos_routes(leptos_options.to_owned(), routes.to_owned(), App)
             .app_data(web::Data::new(leptos_options.to_owned()))
             // Store temp files on same drive, otherwise .persist() will fail due to cross-device link error
-            .app_data(TempFileConfig::default().directory("./files"))
+            .app_data(TempFileConfig::default().directory("files"))
         //.wrap(middleware::Compress::default())
     })
     .bind(&addr)?
