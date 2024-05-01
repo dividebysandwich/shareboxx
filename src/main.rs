@@ -125,7 +125,7 @@ async fn domain_redirect(
     //Only run this check in release builds
     #[cfg(not(debug_assertions))]
     // Check if request hostname matches shareboxx.lan, otherwise redirect to it.
-    if req.connection_info().host() != "shareboxxlan" {
+    if req.connection_info().host() != "shareboxx.lan" {
         return Ok(ServiceResponse::new(
             req.request().to_owned(),
             HttpResponse::TemporaryRedirect()
