@@ -64,7 +64,18 @@ pub async fn get_file_list(
         })
         .collect();
     
-    //If path is not empty, prepend ".." to the list of files
+    // Sort file_entries by name, with directories first, then files.
+    let mut file_entries = file_entries;
+    file_entries.sort_by(|a, b| {
+        if a.0 == "d" && b.0 == "f" {
+            std::cmp::Ordering::Less
+        } else if a.0 == "f" && b.0 == "d" {
+            std::cmp::Ordering::Greater
+        } else {
+            a.1.to_lowercase().cmp(&b.1.to_lowercase())
+        }
+    });
+    // If path is not empty, prepend ".." to the list of files
     if !path.is_empty() {
         let mut new_files = Vec::new();
         new_files.push(("d".to_string(), "..".to_string(), 0));
