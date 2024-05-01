@@ -17,11 +17,12 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 
 ### Installation:
 
+- Get a small linux computer. See the [Wiki](https://github.com/dividebysandwich/shareboxx/wiki) for hardware suggestions
 - Install rust (see https://rustup.rs for instructions)
 - Clone repository on your small linux computer or raspberry pi: ```git clone https://github.com/dividebysandwich/shareboxx```
 - Compile: ```cargo install cargo-leptos&&cargo leptos build --release```
 - ```cd access-point```
-- Edit hostapd.conf and dnsmasq.conf to taste
+- Edit hostapd.conf and dnsmasq.conf to taste - You might want to get an extra wifi adapter with a good antenna, see the [Wiki](https://github.com/dividebysandwich/shareboxx/wiki) for suggested dongles and additional instructions. If you decide to use an USB wifi adapter instead of the built-in Wifi, remember to change ```wlan0``` to ```wlan1``` in hostapd.conf and dnsmasq.conf
 - Run ```sudo ./enable-captive-portal.sh```
 - Run ```sudo ./setup-server.sh```
 - Run ```sudo ./setup-ssl.sh```
