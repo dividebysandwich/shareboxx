@@ -1,10 +1,18 @@
 #[cfg(feature = "ssr")]
+use actix_web::{Error,HttpRequest, body::MessageBody, dev::{ServiceRequest, ServiceResponse}};
+#[cfg(feature = "ssr")]
+use actix_multipart::MultipartError;
+#[cfg(feature = "ssr")]
+use leptos::*;
+#[cfg(feature = "ssr")]
+use actix_web_lab::middleware::{from_fn, Next};
+
+#[cfg(feature = "ssr")]
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     use actix_files::Files;
     use actix_web::*;
     use actix_multipart::form::{MultipartFormConfig, tempfile::TempFileConfig};
-    use leptos::*;
     use leptos_actix::{generate_route_list, LeptosRoutes};
     use shareboxx::app::*;
 
@@ -19,6 +27,7 @@ async fn main() -> std::io::Result<()> {
         let site_root = &leptos_options.site_root;
 
         App::new()
+            .wrap(from_fn(domain_redirect))
             .app_data(
                 MultipartFormConfig::default()
                     .total_limit(10 * 1024 * 1024 * 1024) // 10 GB
@@ -46,17 +55,6 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-
-
-#[cfg(feature = "ssr")]
-use actix_web::Error;
-#[cfg(feature = "ssr")]
-use actix_web::HttpRequest;
-#[cfg(feature = "ssr")]
-use actix_multipart::MultipartError;
-#[cfg(feature = "ssr")]
-use leptos::*;
-
 
 #[cfg(feature = "ssr")]
 fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
@@ -117,3 +115,25 @@ async fn save_files(
 
     Ok(actix_web::web::Redirect::to("/").see_other())
 }
+
+#[cfg(feature = "ssr")]
+async fn domain_redirect(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<impl MessageBody>, Error> {
+    //Only run this check in release builds
+    #[cfg(not(debug_assertions))]
+    // Check if request hostname matches shareboxx, otherwise redirect to it.
+    if req.connection_info().host() != "shareboxx" {
+        return Ok(ServiceResponse::new(
+            req.request().to_owned(),
+            HttpResponse::TemporaryRedirect()
+                .append_header(("Location", "https://shareboxx"))
+                .finish(),
+        )
+        .map_into_boxed_body());
+    }
+
+    next.call(req).await.map(ServiceResponse::map_into_boxed_body)
+}
+
