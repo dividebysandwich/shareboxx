@@ -1,5 +1,5 @@
 #[cfg(feature = "ssr")]
-use actix_web::{Error,HttpRequest, body::MessageBody, dev::{ServiceRequest, ServiceResponse}};
+use actix_web::{Error, HttpRequest, HttpResponse, body::MessageBody, dev::{ServiceRequest, ServiceResponse}};
 #[cfg(feature = "ssr")]
 use actix_multipart::MultipartError;
 #[cfg(feature = "ssr")]
@@ -121,12 +121,8 @@ async fn domain_redirect(
     req: ServiceRequest,
     next: Next<impl MessageBody + 'static>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
-    use actix_web::HttpResponse;
-    //Only run this check in release builds
-    #[cfg(not(debug_assertions))]
     // Check if request hostname matches shareboxx.lan, otherwise redirect to it.
-    if req.connection_info().host() != "shareboxx.lan" {
-        logging::log!("Request host: {}", req.connection_info().host());
+    if req.connection_info().host() != "shareboxx.lan" && !req.connection_info().host().starts_with("127.0.0.1") {
         return Ok(ServiceResponse::new(
             req.request().to_owned(),
             HttpResponse::TemporaryRedirect()
