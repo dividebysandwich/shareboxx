@@ -72,7 +72,6 @@ pub async fn get_file_list(
         return Ok(new_files);
     }
 
-//    logging::log!("Found {} files: {:?}", file_entries.len(), file_entries);
     Ok(file_entries)
 }
 
@@ -174,16 +173,17 @@ pub fn FileListComponent() -> impl IntoView {
                                     })
                                     .collect_view()        
                                 }
-                                Err(_e) => {
+                                Err(e) => {
+                                    logging::log!("Error displaying files: {:?}", e);
                                     leptos::View::Text(view! {
-                                        "Error! {_e}"
+                                        "ERROR: Could not display files. Please try again later."
                                     })
                                 }
                             }
                         }
                         None => {
                             leptos::View::Text(view! {
-                                "Error: No results found.   "
+                                "No files found."
                             })
                         }
                     }
