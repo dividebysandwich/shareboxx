@@ -121,6 +121,7 @@ async fn domain_redirect(
     req: ServiceRequest,
     next: Next<impl MessageBody + 'static>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
+    use actix_web::HttpResponse;
     //Only run this check in release builds
     #[cfg(not(debug_assertions))]
     // Check if request hostname matches shareboxx, otherwise redirect to it.
