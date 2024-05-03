@@ -110,7 +110,14 @@ async fn save_files(
 
     for f in form.files {
         let path = format!("./files/{}{}", form.upload_path.clone(), f.file_name.unwrap());
-        f.file.persist(path).unwrap();
+        // Check if file already exists, if so, append a number to the filename
+        let mut i = 1;
+        let mut new_path = path.clone();
+        while std::path::Path::new(&new_path).exists() {
+            new_path = format!("{}-{}", path, i);
+            i += 1;
+        }
+        f.file.persist(new_path).unwrap();
     }
 
     Ok(actix_web::web::Redirect::to("/").see_other())
