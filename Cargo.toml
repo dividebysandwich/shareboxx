@@ -19,7 +19,9 @@ leptos_actix = { version = "0.6", optional = true }
 leptos_router = { version = "0.6", features = ["nightly"] }
 wasm-bindgen = "=0.2.92"
 fmtsize = "0.1.1"
-
+ammonia = "4.0.0"
+serde = { version = "1.0.130", features = ["derive"] }
+serde_json = "1.0.68"
 
 [features]
 csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr"]

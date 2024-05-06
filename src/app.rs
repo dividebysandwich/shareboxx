@@ -1,8 +1,10 @@
 use fmtsize::{Conventional, FmtSize};
-use leptos::*;
+use leptos::{html::Input, *};
+use leptos::ev::SubmitEvent;
 use leptos_meta::*;
 use leptos_router::*;
-
+#[cfg(feature = "ssr")]
+use ammonia::clean;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -27,6 +29,73 @@ pub fn App() -> impl IntoView {
                 </Routes>
             </main>
         </Router>
+    }
+}
+
+/// Renders the home page of your application.
+#[component]
+fn HomePage() -> impl IntoView {
+    let (path, set_path) = create_signal("".to_string());
+    view! {
+        <div class="container-fluid">
+            <div class="row">
+
+                <div class="col text-left">
+                    <div class="container-fluid">
+                        <div class="row">
+                            <div class="col text-left">
+                                <div class="card">
+                                    <h2 class="card-header">Welcome to Shareboxx</h2>
+                                    <div class="card-body">
+                                        <p class="card-text">Shareboxx is a free offline fire sharing service. You can upload files and share them with others. <br/>
+                                        This is an local, anonymous service with no internet connection and no accounts. Note that executables are not checked for malware, so be careful what you download.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col text-left">
+                                <p/>
+                                <FileUploadComponent path=path/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col text-left">
+                    <ChatComponent/>
+                </div>
+            </div>
+        </div>
+        <p/>
+        <div class="card">
+            <h2 class="card-header">Download Files</h2>
+            <div class="card-body">
+                <FileListComponent path=path set_path=set_path/>
+            </div>
+        </div>
+        <br/>
+    }
+}
+
+/// 404 - Not Found
+#[component]
+fn NotFound() -> impl IntoView {
+    // set an HTTP status code 404
+    // this is feature gated because it can only be done during
+    // initial server-side rendering
+    // if you navigate to the 404 page subsequently, the status
+    // code will not be set because there is not a new HTTP request
+    // to the server
+    #[cfg(feature = "ssr")]
+    {
+        // this can be done inline because it's synchronous
+        // if it were async, we'd use a server function
+        let resp = expect_context::<leptos_actix::ResponseOptions>();
+        resp.set_status(actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    view! {
+        <h1>"Not Found"</h1>
     }
 }
 
@@ -87,8 +156,29 @@ pub async fn get_file_list(
 }
 
 #[component]
-pub fn FileListComponent() -> impl IntoView {
-    let (path, set_path) = create_signal("".to_string());
+pub fn FileUploadComponent(
+    path: ReadSignal<String>,
+) -> impl IntoView {
+    view! {
+        <div class="card">
+            <h2 class="card-header">Upload Files</h2>
+            <div class="card-body">
+                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="upload_path" value={path.clone()}/>
+                    <input type="file" multiple name="file"/>
+                    <button type="submit">Submit</button>
+                </form>            
+            </div>
+        </div>
+    }
+
+}
+
+#[component]
+pub fn FileListComponent(
+    path: ReadSignal<String>,
+    set_path: WriteSignal<String>
+) -> impl IntoView {
     // our resource
     let directory_listing = create_local_resource(
         path,
@@ -105,22 +195,11 @@ pub fn FileListComponent() -> impl IntoView {
     let is_loading = move || if loading() { "Loading..." } else { "" };
     view! {
         <div>
-        <h2>Upload Files:</h2>
-            <div>
-                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
-                    <input type="hidden" name="upload_path" value={path.clone()}/>
-                    <input type="file" multiple name="file"/>
-                    <button type="submit">Submit</button>
-                </form>            
-            </div>
-            <p/>
-            <br/>
-            <h2>Download Files:</h2>
-            Current Directory: {path.clone()}
-            <br/>
-            <p/>
-            {is_loading}
-            <div class="list-group">
+        Current Directory: {path.clone()}
+        <br/>
+        <p/>
+        {is_loading}
+        <div class="list-group">
             {
                 move || { 
                     match directory_listing.get() {
@@ -182,7 +261,7 @@ pub fn FileListComponent() -> impl IntoView {
                                         </a>
                                         }
                                     })
-                                    .collect_view()        
+                                    .collect_view()
                                 }
                                 Err(e) => {
                                     logging::log!("Error displaying files: {:?}", e);
@@ -206,42 +285,167 @@ pub fn FileListComponent() -> impl IntoView {
 
 }
 
-/// Renders the home page of your application.
-#[component]
-fn HomePage() -> impl IntoView {
-    view! {
-        <h1>"Welcome to ShareBoxx!"</h1>
-        <br/>
-        <div class="card">
-            <div class="card-body">
-                Shareboxx is a free offline fire sharing service. You can upload files and share them with others. <br/>
-                This is an local, anonymous service with no internet connection and no accounts. Note that executables are not checked for malware, so be careful what you download.<br/>
-            </div>
-        </div>
-        <p/>
-        <FileListComponent/>
-        <br/>
+#[server(GetChatMessages)]
+pub async fn get_chat_messages(
+    new_chat_message : (String, String)
+) -> Result<Vec<(String, String, u64)>, ServerFnError> {
+    logging::log!("Chat message received: {:?}", new_chat_message);
+    // Filter the chat message for XSS
+    let mut new_username = clean(&new_chat_message.0);
+    let new_chat_message = clean(&new_chat_message.1);
+    
+    if new_username.clone().is_empty() {
+        new_username = "Anonymous".to_string();
     }
+
+    // Read chat.json, parse it, append the new chat message, and write it back to chat.json
+    let base_path = std::env::current_dir()
+    .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+    let chat_file_path = base_path.join("chat.json");
+
+    // Read chat file to string, create it if it doesn't exist
+    if !chat_file_path.exists() {
+        let chat_file = std::fs::File::create(chat_file_path.clone())
+            .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
+        chat_file.sync_all()
+            .map_err(|e| format!("Error syncing chat file: {:?}", e)).unwrap();
+    }
+
+    let chat_file = std::fs::read_to_string(chat_file_path.clone())
+        .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
+
+    let mut chat_messages : Vec<(String, String, u64)> = Vec::new();
+    // If chat file is not empty, parse it
+    if !chat_file.is_empty() {
+        chat_messages = serde_json::from_str(&chat_file)
+        .map_err(|e| format!("Error parsing chat file: {:?}", e)).unwrap();
+    }
+
+    // Append the new chat message
+    if new_chat_message.len() > 0 && new_chat_message.len() < 1000 {
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        chat_messages.push((new_username.clone(), new_chat_message.clone(), timestamp));
+        // Write the chat messages back to chat.json
+        let chat_file = std::fs::File::create(chat_file_path)
+            .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
+        serde_json::to_writer(chat_file, &chat_messages)
+            .map_err(|e| format!("Error writing chat file: {:?}", e)).unwrap();
+    }
+    // Only return the last 5 chat messages
+    let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
+
+    Ok(chat_messages)
+
+
+
+
+
+    // Append the new chat message to the file chat.txt, then read the file and return the chat messages
+    // let base_path = std::env::current_dir()
+    // .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+    // let chat_file_path = base_path.join("chat.txt");
+    // if new_chat_message.clone().len() > 0 && new_chat_message.clone().len() < 1000 {
+    //     let mut file = std::fs::OpenOptions::new()
+    //         .create(true)
+    //         .append(true)
+    //         .open(chat_file_path.clone())
+    //         .map_err(|e| format!("Error opening chat file: {:?}", e)).unwrap();
+    //     file.write_all(new_chat_message.as_bytes())
+    //         .map_err(|e| format!("Error writing to chat file: {:?}", e)).unwrap();
+    //     file.write_all(b"\n")
+    //         .map_err(|e| format!("Error writing to chat file: {:?}", e)).unwrap();
+    //     file.sync_all()
+    //         .map_err(|e| format!("Error syncing chat file: {:?}", e)).unwrap();
+    //     drop(file);
+    // }
+    // // Read the chat file and return the chat messages
+    // let chat_file = std::fs::read_to_string(chat_file_path)
+    //     .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
+    // let chat_messages : Vec<(String, String, u64)> = chat_file
+    //     .lines()
+    //     .map(|line| ("User".to_string(), line.to_string(), 0))
+    //     .collect();
+    // // Only return the last 5 chat messages
+    // let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
+
+    // Ok(chat_messages)
 }
 
-/// 404 - Not Found
 #[component]
-fn NotFound() -> impl IntoView {
-    // set an HTTP status code 404
-    // this is feature gated because it can only be done during
-    // initial server-side rendering
-    // if you navigate to the 404 page subsequently, the status
-    // code will not be set because there is not a new HTTP request
-    // to the server
-    #[cfg(feature = "ssr")]
-    {
-        // this can be done inline because it's synchronous
-        // if it were async, we'd use a server function
-        let resp = expect_context::<leptos_actix::ResponseOptions>();
-        resp.set_status(actix_web::http::StatusCode::NOT_FOUND);
-    }
+pub fn ChatComponent() -> impl IntoView {
+    let (chat, send_chat) = create_signal(("".to_string(), "".to_string()));
+    let chat_input_ref: NodeRef<Input> = create_node_ref();
+    let name_input_ref: NodeRef<Input> = create_node_ref();
 
+    let on_submit = move |ev: SubmitEvent| {
+        // Prevent the page from refreshing
+        ev.prevent_default();
+        // Get a reference to the chat text input box
+        let new_chat_message = chat_input_ref().expect("<input> does not exist").value();
+        let new_username = name_input_ref().expect("<input> does not exist").value();
+        // Send the chat message to the server
+        send_chat((new_username.to_string(), new_chat_message.to_string()));
+        // Clear text input box
+        chat_input_ref().expect("<input> does not exist").set_value("");
+    };
+
+    // our resource
+    let chat_messages = create_local_resource(
+        chat,
+        // every time `chat` changes, this will run
+        |new_chat_message| async move {
+            logging::log!("Chat by {}: {}", new_chat_message.0, new_chat_message.1);
+            get_chat_messages(new_chat_message).await
+        },
+    );
     view! {
-        <h1>"Not Found"</h1>
+        <div class="card">
+        <h2 class="card-header">Chat</h2>
+        <div class="card-body overflow-y-scroll">
+          {
+            move || { 
+                match chat_messages.get() {
+                    Some(result) => {
+                        match result {
+                            Ok(messages) => {
+                                messages.into_iter()
+                                .map(move |n| {
+                                    let (user, message, _timestamp) = n.clone();
+                                    view!{
+                                    <div class="card">
+                                        <div class="card-body">
+                                            <p class="card-text">{user}: {message}</p>
+                                        </div>
+                                    </div>
+                                    }
+                                }).collect_view()
+                            },
+                            Err(e) => {
+                                logging::log!("Error displaying chat messages: {:?}", e);
+                                leptos::View::Text(view! {
+                                    "ERROR: Could not display chat messages. Please try again later."
+                                })
+                            }
+                        }
+                    },
+                    None => {
+                        leptos::View::Text(view! {
+                            "No chat messages found"
+                        })
+                    }
+                }
+            }
+          }
+          <div>
+            <form on:submit=on_submit>
+            <input type="text" class="form-control" placeholder="Name" node_ref=name_input_ref />
+            <input type="text" class="form-control" placeholder="Type a chat message" node_ref=chat_input_ref />
+            <button class="btn btn-outline-secondary" type="submit" id="button-send">Send</button>
+            </form>
+          </div>
+
+        </div>
+      </div>
+
     }
 }
