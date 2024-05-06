@@ -335,40 +335,6 @@ pub async fn get_chat_messages(
     let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
 
     Ok(chat_messages)
-
-
-
-
-
-    // Append the new chat message to the file chat.txt, then read the file and return the chat messages
-    // let base_path = std::env::current_dir()
-    // .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
-    // let chat_file_path = base_path.join("chat.txt");
-    // if new_chat_message.clone().len() > 0 && new_chat_message.clone().len() < 1000 {
-    //     let mut file = std::fs::OpenOptions::new()
-    //         .create(true)
-    //         .append(true)
-    //         .open(chat_file_path.clone())
-    //         .map_err(|e| format!("Error opening chat file: {:?}", e)).unwrap();
-    //     file.write_all(new_chat_message.as_bytes())
-    //         .map_err(|e| format!("Error writing to chat file: {:?}", e)).unwrap();
-    //     file.write_all(b"\n")
-    //         .map_err(|e| format!("Error writing to chat file: {:?}", e)).unwrap();
-    //     file.sync_all()
-    //         .map_err(|e| format!("Error syncing chat file: {:?}", e)).unwrap();
-    //     drop(file);
-    // }
-    // // Read the chat file and return the chat messages
-    // let chat_file = std::fs::read_to_string(chat_file_path)
-    //     .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
-    // let chat_messages : Vec<(String, String, u64)> = chat_file
-    //     .lines()
-    //     .map(|line| ("User".to_string(), line.to_string(), 0))
-    //     .collect();
-    // // Only return the last 5 chat messages
-    // let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
-
-    // Ok(chat_messages)
 }
 
 #[component]
