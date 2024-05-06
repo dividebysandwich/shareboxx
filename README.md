@@ -1,8 +1,7 @@
 # shareboxx
 An anonymous, disconnected local filesharing system over WiFi, similar to Piratebox and Librarybox, entirely written in Rust.
 
-![image](https://github.com/dividebysandwich/shareboxx/assets/23048489/3be9d8a1-a2e9-46aa-a191-bfc2eb9076d6)
-
+![image](https://github.com/dividebysandwich/shareboxx/assets/23048489/72fe97a9-5345-4e76-8d25-debd9dac55bd)
 
 ### What does it do?
 
