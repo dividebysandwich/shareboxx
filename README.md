@@ -5,7 +5,16 @@ An anonymous, disconnected local filesharing system over WiFi, similar to Pirate
 
 ### What does it do?
 
-This software can turn your small linux computer or Raspberry Pi into an wireless anonymous offline local filesharing (WAOLF?) system. The idea is similar to the now-abandoned Piratebox, except Shareboxx does not have a large footprint of webservers and php script files. It's a single executable that does everything: Serving files, the web UI, and accepting uploads.
+This software can turn your small linux computer or Raspberry Pi into an wireless anonymous offline local filesharing (WAOLF?) system. The idea is similar to the now-abandoned Piratebox, except Shareboxx does not have a large footprint of webservers and php script files. It's a single executable that does everything: Serving files, the web UI with chat, and accepting and processing uploads.
+
+### Features:
+- Quick and easy directory browsing
+- Supports large file downloads and uploads
+- Files can be uploaded to any directory
+- Chat function with live updates
+- File overwrite protection
+- Responsive UI
+- No accounts needed, minimal logging
 
 ### Hardware requirements:
 
@@ -28,3 +37,4 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 - Run ```sudo ./setup-ssl.sh```
 
 Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /shareboxx/files, or you can copy files onto a USB drive and mount that under /shareboxx/files for example.
+You may want to install a malware detection tool like [LMD](https://www.rfxn.com/projects/linux-malware-detect/) to automatically scan uploaded files.
