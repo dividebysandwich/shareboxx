@@ -114,13 +114,19 @@ async fn save_files(
 
     for f in form.files {
         let path = format!("./files/{}{}", form.upload_path.clone(), f.file_name.unwrap());
-        // Check if file already exists, if so, append a number to the filename
-        let mut i = 1;
+        
+        // Check if file already exists, if so, append a number to the filename in front of the extension
         let mut new_path = path.clone();
+        let mut i = 1;
+        let basepath = std::path::Path::new(&path).parent().unwrap().to_str().unwrap();
+        let file_basename = std::path::Path::new(&path).file_stem().unwrap().to_str().unwrap();
+        let file_extension = std::path::Path::new(&path).extension().unwrap().to_str().unwrap();
         while std::path::Path::new(&new_path).exists() {
-            new_path = format!("{}-{}", path, i);
+            logging::log!("Uploaded file {} already exists, trying to save as new file {}-{}.{}", new_path, file_basename, i, file_extension);
+            new_path = format!("{}/{}-{}.{}", basepath, file_basename, i, file_extension);
             i += 1;
         }
+
         f.file.persist(new_path).unwrap();
     }
 
