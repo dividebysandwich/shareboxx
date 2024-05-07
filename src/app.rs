@@ -386,18 +386,19 @@ pub fn ChatComponent() -> impl IntoView {
                     Err(_) => "0".to_string(),
                 }),
         );
-      on_cleanup(move || source.close());
+        on_cleanup(move || source.close());
         s
     };
 
     #[cfg(feature = "ssr")]
     let (message_count_value, _) = create_signal(None::<i32>);
 
+    // If there's a new message count value sent from the server, initiate a GET for new chat messages by sending an empty message.
+    // This could of course be done more efficiently by directly fetching the new chat message from the server.
     create_effect(move |_| {
         let count = message_count_value.get().unwrap_or_default();
-        send_chat((count.to_string(), "".to_string()));
+        send_chat((count.to_string(), "".to_string())); // If count is not used anywhere, the effect will never be triggered.
     });
-
 
     view! {
         <div class="card">
