@@ -22,6 +22,13 @@ fmtsize = "0.1.1"
 ammonia = "4.0.0"
 serde = { version = "1.0.130", features = ["derive"] }
 serde_json = "1.0.68"
+broadcaster = "1.0.0"
+futures = "0.3.30"
+lazy_static = "1.4.0"
+once_cell = "1.19.0"
+gloo-net = "0.5.0"
+tracing = { version = "0.1.40", optional = true }
+simple_logger = "5.0.0"
 
 [features]
 csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr"]
@@ -32,6 +39,7 @@ ssr = [
   "dep:actix-web-lab",
   "dep:actix-multipart",
   "dep:leptos_actix",
+  "dep:tracing",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",

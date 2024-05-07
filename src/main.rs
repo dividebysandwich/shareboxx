@@ -1,3 +1,4 @@
+use actix_web::{get, Responder};
 #[cfg(feature = "ssr")]
 use actix_web::{Error, HttpRequest, HttpResponse, body::MessageBody, dev::{ServiceRequest, ServiceResponse}};
 #[cfg(feature = "ssr")]
@@ -34,7 +35,10 @@ async fn main() -> std::io::Result<()> {
                     .memory_limit(10 * 1024 * 1024) // 10 MB
                     .error_handler(handle_multipart_error),
             )
+            // Leptos server side API
             .route("/api/{tail:.*}", leptos_actix::handle_server_fns())
+            // SSE events to notify clients of new chat messages
+            .service(counter_events)
             // serve JS/WASM/CSS from `pkg`
             .service(Files::new("/pkg", format!("{site_root}/pkg")))
             // serve other assets from the `assets` directory
@@ -142,3 +146,23 @@ async fn domain_redirect(
     next.call(req).await.map(ServiceResponse::map_into_boxed_body)
 }
 
+#[cfg(feature = "ssr")]
+#[get("/ws")]
+async fn counter_events() -> impl Responder {
+    use actix_web::web;
+    use shareboxx::app::ssr_imports::*;
+    use futures::StreamExt;
+
+    let stream = futures::stream::once(async {
+        shareboxx::app::get_message_count().await.unwrap_or(0)
+    })
+    .chain(COUNT_CHANNEL.clone())
+    .map(|value| {
+        Ok(web::Bytes::from(format!(
+            "event: message\ndata: {value}\n\n"
+        ))) as Result<web::Bytes, Error>
+    });
+    HttpResponse::Ok()
+        .insert_header(("Content-Type", "text/event-stream"))
+        .streaming(stream)
+}

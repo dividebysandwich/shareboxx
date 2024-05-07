@@ -5,6 +5,8 @@ use leptos_meta::*;
 use leptos_router::*;
 #[cfg(feature = "ssr")]
 use ammonia::clean;
+#[allow(unused_imports)]
+use tracing::instrument;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -342,6 +344,7 @@ pub fn ChatComponent() -> impl IntoView {
     let (chat, send_chat) = create_signal(("".to_string(), "".to_string()));
     let chat_input_ref: NodeRef<Input> = create_node_ref();
     let name_input_ref: NodeRef<Input> = create_node_ref();
+    let inc = create_action(|_: &()| adjust_message_count(1, "test".into()));
 
     let on_submit = move |ev: SubmitEvent| {
         // Prevent the page from refreshing
@@ -353,6 +356,7 @@ pub fn ChatComponent() -> impl IntoView {
         send_chat((new_username.to_string(), new_chat_message.to_string()));
         // Clear text input box
         chat_input_ref().expect("<input> does not exist").set_value("");
+        inc.dispatch(());
     };
 
     // our resource
@@ -364,6 +368,39 @@ pub fn ChatComponent() -> impl IntoView {
             get_chat_messages(new_chat_message).await
         },
     );
+
+    #[cfg(not(feature = "ssr"))]
+    let message_count_value = {
+        use futures::StreamExt;
+        let mut source =
+            gloo_net::eventsource::futures::EventSource::new("/ws")
+                .expect("couldn't connect to SSE stream");
+        let s = create_signal_from_stream(
+                source
+                .subscribe("message")
+                .unwrap()
+                .map(|value| match value {
+                    Ok(value) => value
+                        .1
+                        .data()
+                        .as_string()
+                        .expect("expected string value"),
+                    Err(_) => "0".to_string(),
+                }),
+        );
+      on_cleanup(move || source.close());
+        s
+    };
+
+    #[cfg(feature = "ssr")]
+    let (message_count_value, _) = create_signal(None::<i32>);
+
+    create_effect(move |_| {
+        let count = message_count_value.get().unwrap_or_default();
+        send_chat((count.to_string(), "".to_string()));
+    });
+
+
     view! {
         <div class="card">
         <h2 class="card-header">Chat</h2>
@@ -403,7 +440,7 @@ pub fn ChatComponent() -> impl IntoView {
             }
           }
           <div>
-            <form on:submit=on_submit>
+          <form on:submit=on_submit>
             <input type="text" class="form-control" placeholder="Name" node_ref=name_input_ref />
             <input type="text" class="form-control" placeholder="Type a chat message" node_ref=chat_input_ref />
             <button class="btn btn-outline-secondary" type="submit" id="button-send">Send</button>
@@ -414,4 +451,48 @@ pub fn ChatComponent() -> impl IntoView {
       </div>
 
     }
+}
+
+#[cfg(feature = "ssr")]
+pub mod ssr_imports {
+    pub use broadcaster::BroadcastChannel;
+    pub use once_cell::sync::OnceCell;
+    pub use std::sync::atomic::{AtomicI32, Ordering};
+
+    pub static COUNT: AtomicI32 = AtomicI32::new(0);
+
+    lazy_static::lazy_static! {
+        pub static ref COUNT_CHANNEL: BroadcastChannel<i32> = BroadcastChannel::new();
+    }
+
+    static LOG_INIT: OnceCell<()> = OnceCell::new();
+
+    pub fn init_logging() {
+        LOG_INIT.get_or_init(|| {
+            simple_logger::SimpleLogger::new().env().init().unwrap();
+        });
+    }
+}
+
+#[server]
+#[cfg_attr(feature = "ssr", instrument)]
+pub async fn get_message_count() -> Result<i32, ServerFnError> {
+    use ssr_imports::*;
+
+    Ok(COUNT.load(Ordering::Relaxed))
+}
+
+#[server]
+#[cfg_attr(feature = "ssr", instrument)]
+pub async fn adjust_message_count(
+    delta: i32,
+    msg: String,
+) -> Result<i32, ServerFnError> {
+    use ssr_imports::*;
+
+    let new = COUNT.load(Ordering::Relaxed) + delta;
+    COUNT.store(new, Ordering::Relaxed);
+    _ = COUNT_CHANNEL.send(&new).await;
+    println!("message = {:?}", msg);
+    Ok(new)
 }
