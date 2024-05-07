@@ -5,8 +5,6 @@ use leptos_meta::*;
 use leptos_router::*;
 #[cfg(feature = "ssr")]
 use ammonia::clean;
-#[allow(unused_imports)]
-use tracing::instrument;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -475,7 +473,6 @@ pub mod ssr_imports {
 }
 
 #[server]
-#[cfg_attr(feature = "ssr", instrument)]
 pub async fn get_message_count() -> Result<i32, ServerFnError> {
     use ssr_imports::*;
 
@@ -483,7 +480,6 @@ pub async fn get_message_count() -> Result<i32, ServerFnError> {
 }
 
 #[server]
-#[cfg_attr(feature = "ssr", instrument)]
 pub async fn adjust_message_count(
     delta: i32,
     msg: String,
