@@ -5,7 +5,7 @@ An anonymous, disconnected local filesharing system over WiFi, similar to Pirate
 
 ### What does it do?
 
-This software can turn your small linux computer or Raspberry Pi into an wireless anonymous offline local filesharing (WAOLF?) system. The idea is similar to the now-abandoned Piratebox, except Shareboxx does not have a large footprint of webservers and php script files. It's a single executable that does everything: Serving files, the web UI with chat, and accepting and processing uploads.
+This software turns your small linux computer or Raspberry Pi into an wireless anonymous offline local filesharing (WAOLF?) system. Anyone within WiFi range can connect to Shareboxx and freely download and upload files. You can install Shareboxx at a fixed location, or bring a Powerbank and take it with you. The idea is similar to the now-abandoned Piratebox, except Shareboxx does not have a large footprint of python scripts, html and javascript files. It's a single executable that does everything: Serving files, the web UI with chat, and accepting and processing uploads.
 
 ### Features:
 - Quick and easy directory browsing
