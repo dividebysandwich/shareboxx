@@ -1,0 +1,9 @@
+services:
+  shareboxx:
+    build: .
+    image: shareboxx:latest
+    volumes:
+      - ./data/files:/shareboxx/files
+      - ./data/chat.json:/shareboxx/chat.json
+    ports:
+      - "3020:3000"
