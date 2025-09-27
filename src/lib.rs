@@ -5,6 +5,7 @@ pub mod app;
 pub fn hydrate() {
     use app::*;
     use leptos::*;
+    use leptos::mount::mount_to_body;
 
     console_error_panic_hook::set_once();
 

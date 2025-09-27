@@ -1,8 +1,13 @@
 use fmtsize::{Conventional, FmtSize};
 use leptos::{html::Input, *};
+use leptos::prelude::*;
 use leptos::ev::SubmitEvent;
 use leptos_meta::*;
 use leptos_router::*;
+use leptos_reactive::{
+    create_local_resource, spawn_local, SignalGet
+};
+use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
 use ammonia::clean;
 
@@ -23,9 +28,9 @@ pub fn App() -> impl IntoView {
         // content for this welcome page
         <Router>
             <main>
-                <Routes>
-                    <Route path="" view=HomePage/>
-                    <Route path="/*any" view=NotFound/>
+                <Routes fallback=HomePage>
+                    <Route path=path!("") view=HomePage/>
+                    <Route path=path!("/*any") view=NotFound/>
                 </Routes>
             </main>
         </Router>
@@ -35,7 +40,7 @@ pub fn App() -> impl IntoView {
 /// Renders the home page of your application.
 #[component]
 fn HomePage() -> impl IntoView {
-    let (path, set_path) = create_signal("".to_string());
+    let (path, set_path) = signal("".to_string());
     view! {
         <div class="container-fluid">
             <div class="row">
@@ -163,7 +168,7 @@ pub fn FileUploadComponent(
         <div class="card">
             <h2 class="card-header">Upload Files</h2>
             <div class="card-body">
-                <form action="/upload" rel="external" method="post" enctype="multipart/form-data">
+                <form action="/upload" method="post" enctype="multipart/form-data">
                     <input type="hidden" name="upload_path" value={path.clone()}/>
                     <input type="file" multiple name="file"/>
                     <button type="submit">Submit</button>
@@ -177,112 +182,88 @@ pub fn FileUploadComponent(
 #[component]
 pub fn FileListComponent(
     path: ReadSignal<String>,
-    set_path: WriteSignal<String>
+    set_path: WriteSignal<String>,
 ) -> impl IntoView {
-    // our resource
     let directory_listing = create_local_resource(
-        path,
-        // every time `count` changes, this will run
-        |value| async move {
-            logging::log!("loading data from API for path {:?}", value);
-            get_file_list(value).await
-        },
+        move || path.get(),
+        get_file_list, // every time `count` changes, this will run
     );
 
-    // the resource's loading() method gives us a
-    // signal to indicate whether it's currently loading
-    let loading = directory_listing.loading();
-    let is_loading = move || if loading() { "Loading..." } else { "" };
+    // Create a derived memo that only contains a value when the resource has loaded successfully.
+    let files = Memo::new(move |_| directory_listing.get().and_then(|res| res.ok()));
+    // Create another memo that only contains a value when the resource has an error.
+    let error = Memo::new(move |_| directory_listing.get().and_then(|res| res.err()));
+    // --- FIX END ---
+
     view! {
         <div>
-        Current Directory: {path.clone()}
-        <br/>
-        <p/>
-        {is_loading}
-        <div class="list-group">
-            {
-                move || { 
-                    match directory_listing.get() {
-                        Some(result) => {
-                            match result {
-                                Ok(files) => {
-                                    files.into_iter()
-                                    .map(move |n| {
-                                        let (file_type_clone, file_name_clone, file_size_clone) = &n.clone();
-                                        let path_value_clone = path.clone().get();
-                                        let mut link_target: String = "#".to_string();
-                                        if file_type_clone.clone() == "f" {
-                                            link_target = format!("/files/{}/{}", path_value_clone, file_name_clone.clone()).to_string();
+            "Current Directory: " {path}
+            <p/>
+
+            // Use <Show> to display the loading state.
+            <Show when=move || directory_listing.loading().get() fallback=|| ()>
+                <p>"Loading..."</p>
+            </Show>
+
+            // Use <Show> to display an error if one exists.
+            <Show
+                when=move || error.get().is_some()
+                fallback=|| ()
+            >
+                <p>"ERROR: " {error.get().unwrap().to_string()}</p>
+            </Show>
+
+            // Use <Show> to display the file list when it's successfully loaded.
+            <Show
+                when=move || files.get().is_some()
+                fallback=|| ()
+            >
+                <div class="list-group">
+                    <For
+                        each=move || files.get().unwrap_or_default()
+                        key=|file| file.1.clone()
+                        children=move |n| {
+                            let (file_type, file_name, file_size) = n;
+                            let link_target = if file_type == "f" {
+                                format!("/files/{}/{}", path.get_untracked(), &file_name)
+                            } else { "#".to_string() };
+
+                            view! {
+                                <a
+                                    href=link_target
+                                    rel="external"
+                                    class="list-group-item list-group-item-action"
+                                    on:click=move |ev| {
+                                        // on:click logic remains the same
+                                        if file_name == ".." {
+                                            ev.prevent_default();
+                                            let current_path = path.get();
+                                            let mut path_parts: Vec<&str> = current_path.trim_end_matches('/').split('/').collect();
+                                            path_parts.pop();
+                                            let new_path = path_parts.join("/");
+                                            set_path.set(if new_path.is_empty() { "".to_string() } else { format!("{}/", new_path) });
+                                        } else if file_type == "d" {
+                                            ev.prevent_default();
+                                            set_path.update(|p| {
+                                                p.push_str(&file_name);
+                                                p.push('/');
+                                            });
                                         }
-                                        view!{
-                                        <a href={link_target} rel="external" on:click=move |ev| {
-                                                let path_value = path.get();
-                                                let (file_type, file_name, _file_size) = n.clone();
-                                                // If path is "..", remove the last directory from the path
-                                                if file_name == ".." {
-                                                    ev.prevent_default();
-                                                    let mut path_clone = path_value.clone();
-                                                    let mut path_parts: Vec<&str> = path_clone.split("/").collect();
-                                                    path_parts.pop();
-                                                    path_parts.pop();
-                                                    path_clone = path_parts.join("/");
-                                                    if !path_clone.ends_with("/") && !path_clone.is_empty() {
-                                                        path_clone.push_str("/");
-                                                    }
-                                                    set_path(path_clone);
-                                                } else {
-                                                    // if file_type is a directory, append it to the path
-                                                    if file_type == "d" {
-                                                        ev.prevent_default();
-                                                        let mut path_clone = path_value.clone();
-                                                        path_clone.push_str(file_name.clone().as_str());
-                                                        path_clone.push_str("/");
-                                                        set_path(path_clone);
-                                                    }
-                                                }
-                                            } class="list-group-item list-group-item-action">
-                                            <img src={if file_type_clone == "d" {"/assets/folder.png"} else {"/assets/file.png"}} style="width: 48px; height: 48px; margin-right: 10px"/>
-                                            {
-                                                if file_type_clone == "d" {
-                                                    format!("{}/", file_name_clone)
-                                                } else {
-                                                    format!("{}", file_name_clone)
-                                                }
-                                            }
-                                            <span class="float-end">
-                                            {
-                                                if file_type_clone == "f" {
-                                                    format!("{} ", file_size_clone.fmt_size(Conventional))
-                                                } else {
-                                                    "".to_string()
-                                                }
-                                            }
-                                            </span>
-                                        </a>
-                                        }
-                                    })
-                                    .collect_view()
-                                }
-                                Err(e) => {
-                                    logging::log!("Error displaying files: {:?}", e);
-                                    leptos::View::Text(view! {
-                                        "ERROR: Could not display files. Please try again later."
-                                    })
-                                }
+                                    }
+                                >
+                                    <img src={if file_type == "d" { "/assets/folder.png" } else { "/assets/file.png" }} style="width: 48px; height: 48px; margin-right: 10px"/>
+                                    {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
+                                    <span class="float-end">
+                                        {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
+                                    </span>
+                                </a>
                             }
                         }
-                        None => {
-                            leptos::View::Text(view! {
-                                "No files found."
-                            })
-                        }
-                    }
-                }
-            }
-            </div>
+                    />
+                </div>
+            </Show>
         </div>
     }
-
 }
 
 #[server(GetChatMessages)]
@@ -339,116 +320,121 @@ pub async fn get_chat_messages(
 
 #[component]
 pub fn ChatComponent() -> impl IntoView {
-    let (chat, send_chat) = create_signal(("".to_string(), "".to_string()));
-    let chat_input_ref: NodeRef<Input> = create_node_ref();
-    let name_input_ref: NodeRef<Input> = create_node_ref();
-    let inc = create_action(|_: &()| adjust_message_count(1, "test".into()));
+    let (chat, send_chat) = signal(("".to_string(), "".to_string()));
+    let chat_input_ref: NodeRef<Input> = NodeRef::new();
+    let name_input_ref: NodeRef<Input> = NodeRef::new();
+    let inc = Action::new(|(delta, msg): &(i32, String)| {
+        // Create owned copies from the borrowed data.
+        let delta_owned = *delta;
+        let msg_owned = msg.clone();
+
+        // `async move` block now captures the owned copies.
+        // This makes the future 'static, satisfying the lifetime requirement.
+        async move {
+            adjust_message_count(delta_owned, msg_owned).await
+        }
+    });
+
 
     let on_submit = move |ev: SubmitEvent| {
         // Prevent the page from refreshing
         ev.prevent_default();
         // Get a reference to the chat text input box
-        let new_chat_message = chat_input_ref().expect("<input> does not exist").value();
-        let new_username = name_input_ref().expect("<input> does not exist").value();
+        let new_chat_message = chat_input_ref.get().expect("<input> does not exist").value();
+        let new_username = name_input_ref.get().expect("<input> does not exist").value();
         // Send the chat message to the server
-        send_chat((new_username.to_string(), new_chat_message.to_string()));
+        send_chat.set((new_username, new_chat_message));
         // Clear text input box
-        chat_input_ref().expect("<input> does not exist").set_value("");
-        inc.dispatch(());
+        chat_input_ref.get().expect("<input> does not exist").set_value("");
+        inc.dispatch((1, "test".into()));
     };
 
-    // our resource
     let chat_messages = create_local_resource(
-        chat,
-        // every time `chat` changes, this will run
-        |new_chat_message| async move {
-            logging::log!("Chat by {}: {}", new_chat_message.0, new_chat_message.1);
-            get_chat_messages(new_chat_message).await
-        },
+        move || chat.get(),
+        get_chat_messages, // every time `chat` changes, this will run
     );
 
+    let messages = Memo::new(move |_| chat_messages.get().and_then(|res| res.ok()));
+    let error = Memo::new(move |_| chat_messages.get().and_then(|res| res.err()));
+
+    // This is the SSE (Server-Sent Events) handling section.
+    let (message_count_value, set_message_count_value) = signal(Some("0".to_string()));
+
     #[cfg(not(feature = "ssr"))]
-    let message_count_value = {
+    {
         use futures::StreamExt;
-        let mut source =
-            gloo_net::eventsource::futures::EventSource::new("/ws")
+        // We use spawn_local to run this non-Send future on the main thread.
+        spawn_local(async move {
+            let mut source = gloo_net::eventsource::futures::EventSource::new("/ws")
                 .expect("couldn't connect to SSE stream");
-        let s = create_signal_from_stream(
-                source
-                .subscribe("message")
-                .unwrap()
-                .map(|value| match value {
-                    Ok(value) => value
-                        .1
-                        .data()
-                        .as_string()
-                        .expect("expected string value"),
-                    Err(_) => "0".to_string(),
-                }),
-        );
-        on_cleanup(move || source.close());
-        s
-    };
 
-    #[cfg(feature = "ssr")]
-    let (message_count_value, _) = create_signal(None::<i32>);
+            let mut stream = source.subscribe("message").unwrap();
 
-    // If there's a new message count value sent from the server, initiate a GET for new chat messages by sending an empty message.
-    // This could of course be done more efficiently by directly fetching the new chat message from the server.
-    create_effect(move |_| {
-        let count = message_count_value.get().unwrap_or_default();
-        send_chat((count.to_string(), "".to_string())); // If count is not used anywhere, the effect will never be triggered.
-    });
-
-    view! {
-        <div class="card">
-        <h2 class="card-header">Chat</h2>
-        <div class="card-body overflow-y-scroll">
-          {
-            move || { 
-                match chat_messages.get() {
-                    Some(result) => {
-                        match result {
-                            Ok(messages) => {
-                                messages.into_iter()
-                                .map(move |n| {
-                                    let (user, message, _timestamp) = n.clone();
-                                    view!{
-                                    <div class="card">
-                                        <div class="card-body">
-                                            <p class="card-text">{user}: {message}</p>
-                                        </div>
-                                    </div>
-                                    }
-                                }).collect_view()
-                            },
-                            Err(e) => {
-                                logging::log!("Error displaying chat messages: {:?}", e);
-                                leptos::View::Text(view! {
-                                    "ERROR: Could not display chat messages. Please try again later."
-                                })
-                            }
-                        }
-                    },
-                    None => {
-                        leptos::View::Text(view! {
-                            "No chat messages found"
-                        })
+            // Continuously listen for new messages on the stream
+            while let Some(value) = stream.next().await {
+                match value {
+                    Ok(event) => {
+                        let data = event.1.data().as_string().unwrap_or_default();
+                        set_message_count_value.set(Some(data));
+                    }
+                    Err(_) => {
+                        // TODO: Handle stream error, e.g., break the loop
+                        break;
                     }
                 }
             }
-          }
-          <div>
-          <form on:submit=on_submit>
-            <input type="text" class="form-control" placeholder="Name" node_ref=name_input_ref />
-            <input type="text" class="form-control" placeholder="Type a chat message" node_ref=chat_input_ref />
-            <button class="btn btn-outline-secondary" type="submit" id="button-send">Send</button>
-            </form>
-          </div>
+            // `source` is dropped here, which automatically closes the connection.
+            // No `on_cleanup` is needed.
+        });
+    }
 
+    // If there's a new message count value sent from the server, initiate a GET for new chat messages by sending an empty message.
+    // This could of course be done more efficiently by directly fetching the new chat message from the server.
+    Effect::new(move |_| {
+        // When message_count_value changes, trigger a refetch of chat messages.
+        if let Some(count) = message_count_value.get() {
+            send_chat.set((count, "".to_string()));
+        }
+    });
+    // --- FIX END ---
+
+
+    view! {
+        <div class="card">
+            <h2 class="card-header">Chat</h2>
+            <div class="card-body overflow-y-scroll">
+                <Show when=move || chat_messages.loading().get() fallback=|| ()>
+                    <p>"Loading chat..."</p>
+                </Show>
+
+                <Show when=move || error.get().is_some() fallback=|| ()>
+                    <p>"ERROR: " {error.get().unwrap().to_string()}</p>
+                </Show>
+
+                <Show when=move || messages.get().is_some() fallback=|| ()>
+                    <For
+                        each=move || messages.get().unwrap_or_default()
+                        key=|msg| msg.2 // timestamp
+                        children=move |(user, message, _)| {
+                            view! {
+                                <div class="card">
+                                    <div class="card-body">
+                                        <p class="card-text">{user}: {message}</p>
+                                    </div>
+                                </div>
+                            }
+                        }
+                    />
+                </Show>
+            </div>
+            <div>
+                <form on:submit=on_submit>
+                    <input type="text" class="form-control" placeholder="Name" node_ref=name_input_ref/>
+                    <input type="text" class="form-control" placeholder="Type a chat message" node_ref=chat_input_ref/>
+                    <button class="btn btn-outline-secondary" type="submit">Send</button>
+                </form>
+            </div>
         </div>
-      </div>
-
     }
 }
 
