@@ -278,17 +278,48 @@ pub fn FileListComponent(
     }
 }
 
-#[server(GetChatMessages)]
-pub async fn get_chat_messages(
-    new_chat_message : (String, String)
-) -> Result<Vec<(String, String, u64)>, ServerFnError> {
-    logging::log!("Chat message received: {:?}", new_chat_message);
-    // Filter the chat message for XSS
-    let mut new_username = clean(&new_chat_message.0);
-    let new_chat_message = clean(&new_chat_message.1);
+#[server]
+pub async fn get_chat_messages() -> Result<Vec<(String, String, u64)>, ServerFnError> {
+
+    let base_path = std::env::current_dir()
+        .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+    let chat_file_path = base_path.join("chat.json");
+
+    if !chat_file_path.exists() {
+        return Ok(Vec::new()); // Just return an empty list if no file exists
+    }
+
+    let chat_file = std::fs::read_to_string(chat_file_path.clone())
+        .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
+
+    let mut chat_messages : Vec<(String, String, u64)> = Vec::new();
+    // If chat file is not empty, parse it
+    let mut chat_messages : Vec<(String, String, u64)> = if !chat_file.is_empty() {
+        serde_json::from_str(&chat_file).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     
-    if new_username.clone().is_empty() {
-        new_username = "Anonymous".to_string();
+    // Only return the last 5 chat messages
+    let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
+
+    Ok(chat_messages)
+}
+
+#[server]
+pub async fn send_chat_message(
+    chat_name: String,
+    chat_message: String,
+) -> Result<(), ServerFnError> {
+    // This gives us access to COUNT_CHANNEL for sending SSE updates
+    use crate::app::ssr_imports::*;
+
+    logging::log!("Chat message received: {:?}", chat_message);
+    // Filter the chat message for XSS
+    let mut chat_name_clone = chat_name.clone();
+    
+    if chat_name_clone.clone().is_empty() {
+        chat_name_clone = "Anonymous".to_string();
     }
 
     // Read chat.json, parse it, append the new chat message, and write it back to chat.json
@@ -315,144 +346,131 @@ pub async fn get_chat_messages(
     }
 
     // Append the new chat message
-    if new_chat_message.len() > 0 && new_chat_message.len() < 1000 {
+    if chat_message.len() > 0 && chat_message.len() < 1000 {
         let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        chat_messages.push((new_username.clone(), new_chat_message.clone(), timestamp));
+        chat_messages.push((chat_name_clone, chat_message.clone(), timestamp));
         // Write the chat messages back to chat.json
         let chat_file = std::fs::File::create(chat_file_path)
             .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
         serde_json::to_writer(chat_file, &chat_messages)
             .map_err(|e| format!("Error writing chat file: {:?}", e)).unwrap();
+        
+        // Send signal to trigger SSE update
+        _ = COUNT_CHANNEL.send(&1).await;
     }
-    // Only return the last 5 chat messages
-    let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
-
-    Ok(chat_messages)
+    Ok(())
 }
 
 #[component]
 pub fn ChatComponent() -> impl IntoView {
-    let (chat, send_chat) = signal(("".to_string(), "".to_string()));
     let chat_input_ref: NodeRef<Input> = NodeRef::new();
-    let name_input_ref: NodeRef<Input> = NodeRef::new();
-    let inc = Action::new(|(delta, msg): &(i32, String)| {
-        // Create owned copies from the borrowed data.
-        let delta_owned = *delta;
-        let msg_owned = msg.clone();
 
-        // `async move` block now captures the owned copies.
-        // This makes the future 'static, satisfying the lifetime requirement.
-        async move {
-            adjust_message_count(delta_owned, msg_owned).await
+    let send_chat_message = ServerAction::<SendChatMessage>::new();
+
+    let (version, set_version) = signal(0);
+
+    // Create the resource for chat messages.
+    // The source signal `|| ()` means it will fetch once on load.
+    // We will trigger subsequent fetches manually.
+    // let chat_messages_resource = create_resource(
+    //     move || version.get(),
+    //     |_| async move { get_chat_messages().await },
+    // );
+
+    // Create the resource only on the client:
+    #[cfg(not(feature = "ssr"))]
+    let chat_messages_resource = Resource::new(move || version.get(), |_| async { get_chat_messages().await });
+
+    // On the server, supply a dummy resource so SSR can render:
+    #[cfg(feature = "ssr")]
+    let chat_messages_resource =
+        Resource::new(move || version.get(), |_| async {
+            // explicitly tell Rust what error type we’re using:
+            Ok::<Vec<(String, String, u64)>, ServerFnError>(vec![(
+                "".to_string(),
+                "".to_string(),
+                0u64,
+            )])
+        });
+
+    // This Memo extracts the Vec from the resource.
+    // The rest of our code will only ever have to deal with this signal,
+    // which *always* contains a Vec, never an error or an option.
+    let messages = Memo::new(move |_| {
+        chat_messages_resource
+            .get()
+            .and_then(|res| res.ok())
+            .unwrap_or_default()
+    });
+
+    // When the user successfully sends a message, we increment the version signal to trigger a refetch for them.
+    Effect::new(move |_| {
+        // .value() is a signal that returns Some(Ok(_)) on success
+        if send_chat_message.value().get().is_some() {
+            set_version.update(|v| *v += 1);
         }
     });
 
-
-    let on_submit = move |ev: SubmitEvent| {
-        // Prevent the page from refreshing
-        ev.prevent_default();
-        // Get a reference to the chat text input box
-        let new_chat_message = chat_input_ref.get().expect("<input> does not exist").value();
-        let new_username = name_input_ref.get().expect("<input> does not exist").value();
-        // Send the chat message to the server
-        send_chat.set((new_username, new_chat_message));
-        // Clear text input box
-        chat_input_ref.get().expect("<input> does not exist").set_value("");
-        inc.dispatch((1, "test".into()));
-    };
-
-    let chat_messages = Resource::new(move|| chat.get(), get_chat_messages);
-    let loading = signal(false);
-
-    spawn_local({
-        let data = chat_messages.clone();
-        let loading = loading.clone();
-        // run after mount
-        async move {
-            loading.1.set(true);
-            // Only run client-side
-            let val = get_chat_messages(chat.get()).await;
-            data.set(Some(val));
-            loading.1.set(false);
-        }
-    });
-
-    let messages = Memo::new(move |_| chat_messages.get().and_then(|res| res.ok()));
-    let error = Memo::new(move |_| chat_messages.get().and_then(|res| res.err()));
-
-    // This is the SSE (Server-Sent Events) handling section.
-    let (message_count_value, set_message_count_value) = signal(Some("0".to_string()));
-
+    // When an event arrives from another user, we also increment the version signal to trigger a refetch.
     #[cfg(not(feature = "ssr"))]
     {
         use futures::StreamExt;
-        // We use spawn_local to run this non-Send future on the main thread.
         spawn_local(async move {
             let mut source = gloo_net::eventsource::futures::EventSource::new("/ws")
                 .expect("couldn't connect to SSE stream");
-
             let mut stream = source.subscribe("message").unwrap();
-
-            // Continuously listen for new messages on the stream
-            while let Some(value) = stream.next().await {
-                match value {
-                    Ok(event) => {
-                        let data = event.1.data().as_string().unwrap_or_default();
-                        set_message_count_value.set(Some(data));
-                    }
-                    Err(_) => {
-                        // TODO: Handle stream error, e.g., break the loop
-                        break;
-                    }
-                }
+            while let Some(_) = stream.next().await {
+                set_version.update(|v| *v += 1);
             }
-            // `source` is dropped here, which automatically closes the connection.
-            // No `on_cleanup` is needed.
         });
     }
 
-    // If there's a new message count value sent from the server, initiate a GET for new chat messages by sending an empty message.
-    // This could of course be done more efficiently by directly fetching the new chat message from the server.
-    Effect::new(move |_| {
-        // When message_count_value changes, trigger a refetch of chat messages.
-        if let Some(count) = message_count_value.get() {
-            send_chat.set((count, "".to_string()));
+    // This on_submit now only needs to clear the input.
+    // The ActionForm handles preventing the default refresh automatically.
+    let on_submit = move |ev: SubmitEvent| {
+        if let Some(input) = chat_input_ref.get() {
+            input.set_value("");
+            ev.prevent_default();
         }
-    });
+    };
 
     view! {
         <div class="card">
             <h2 class="card-header">Chat</h2>
-            <div class="card-body overflow-y-scroll">
-
-                <Show when=move || error.get().is_some() fallback=|| ()>
-                    <p>"ERROR: " {error.get().unwrap().to_string()}</p>
-                </Show>
-
-                <Show when=move || chat_messages.get().is_some()
-                    fallback=|| view! { <p>"Loading chat..."</p> }
-                >
-                    <For
-                        each=move || messages.get().unwrap_or_default()
-                        key=|msg| msg.2 // timestamp
-                        children=move |(user, message, _)| {
-                            view! {
-                                <div class="card">
-                                    <div class="card-body">
-                                        <p class="card-text">{user}: {message}</p>
-                                    </div>
-                                </div>
+            <div class="card-body overflow-y-scroll" style="height: 300px;">
+                <Suspense fallback=|| view! { <p>"Loading..."</p> }>
+                    // 3. The View is now simple. We use <Show> to handle the empty case.
+                    // This is the correct way to do conditional rendering and will not cause type errors.
+                    <Show
+                        when=move || !messages.get().is_empty()
+                        fallback=|| view! { <p>"No messages yet."</p> }
+                    >
+                        <For
+                            // `each` gets the data from our clean `messages` Memo.
+                            // This pattern is `Fn` and is lifetime-safe.
+                            each=move || messages.get()
+                            key=|msg| msg.2
+                            children=move |(user, message, _)| {
+                                view! { <p><strong>{user}</strong>": " {message}</p> }
                             }
-                        }
-                    />
-                </Show>
+                        />
+                    </Show>
+                </Suspense>
             </div>
             <div>
-                <form on:submit=on_submit>
-                    <input type="text" class="form-control" placeholder="Name" node_ref=name_input_ref/>
-                    <input type="text" class="form-control" placeholder="Type a chat message" node_ref=chat_input_ref/>
-                    <button class="btn btn-outline-secondary" type="submit">Send</button>
-                </form>
+                <ActionForm action=send_chat_message on:submit=on_submit>
+                    <div class="input-group">
+                        <input type="text" class="form-control" placeholder="Name" name="chat_name"/>
+                        <input
+                            type="text"
+                            class="form-control"
+                            placeholder="Type a chat message"
+                            name="chat_message"
+                            node_ref=chat_input_ref
+                        />
+                        <button class="btn btn-outline-secondary" type="submit">Send</button>
+                    </div>
+                </ActionForm>
             </div>
         </div>
     }
