@@ -5,7 +5,7 @@ use leptos::ev::SubmitEvent;
 use leptos_meta::*;
 use leptos_router::*;
 use leptos_reactive::{
-    create_local_resource, spawn_local, SignalGet
+    create_resource, spawn_local, SignalGet
 };
 use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
@@ -18,13 +18,14 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Html attr:data-bs-theme="dark"/>
+        <head>
         // injects a stylesheet into the document <head>
         // id=leptos means cargo-leptos will hot-reload this stylesheet
         <Stylesheet id="leptos" href="/pkg/shareboxx.css"/>
 
         // sets the document title
         <Title text="Welcome to ShareBoxx"/>
-
+        </head>
         // content for this welcome page
         <Router>
             <main>
@@ -112,7 +113,7 @@ pub async fn get_file_list(
     .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
     //Check if path contains "..", if so, return an error
     if path.contains("..") {
-        return Err(leptos::ServerFnError::ServerError("Path contains '..'".to_string()));
+        return Err(ServerFnError::ServerError("Path contains '..'".to_string()));
     }
     let path_to_read = base_path.join("files").join(path.clone());
     logging::log!("Listing directory: {:?}", path_to_read.clone());
@@ -184,16 +185,27 @@ pub fn FileListComponent(
     path: ReadSignal<String>,
     set_path: WriteSignal<String>,
 ) -> impl IntoView {
-    let directory_listing = create_local_resource(
-        move || path.get(),
-        get_file_list, // every time `count` changes, this will run
-    );
 
+    let directory_listing = Resource::new(move|| path.get(), get_file_list);
+    let loading = signal(false);
+
+    spawn_local({
+        let data = directory_listing.clone();
+        let loading = loading.clone();
+        // run after mount
+        async move {
+            loading.1.set(true);
+            // Only run client-side
+            let val = get_file_list(path.get()).await;
+            data.set(Some(val));
+            loading.1.set(false);
+        }
+    });
+    
     // Create a derived memo that only contains a value when the resource has loaded successfully.
     let files = Memo::new(move |_| directory_listing.get().and_then(|res| res.ok()));
     // Create another memo that only contains a value when the resource has an error.
     let error = Memo::new(move |_| directory_listing.get().and_then(|res| res.err()));
-    // --- FIX END ---
 
     view! {
         <div>
@@ -201,7 +213,7 @@ pub fn FileListComponent(
             <p/>
 
             // Use <Show> to display the loading state.
-            <Show when=move || directory_listing.loading().get() fallback=|| ()>
+            <Show when=move || loading.0.get() fallback=|| ()>
                 <p>"Loading..."</p>
             </Show>
 
@@ -349,10 +361,21 @@ pub fn ChatComponent() -> impl IntoView {
         inc.dispatch((1, "test".into()));
     };
 
-    let chat_messages = create_local_resource(
-        move || chat.get(),
-        get_chat_messages, // every time `chat` changes, this will run
-    );
+    let chat_messages = Resource::new(move|| chat.get(), get_chat_messages);
+    let loading = signal(false);
+
+    spawn_local({
+        let data = chat_messages.clone();
+        let loading = loading.clone();
+        // run after mount
+        async move {
+            loading.1.set(true);
+            // Only run client-side
+            let val = get_chat_messages(chat.get()).await;
+            data.set(Some(val));
+            loading.1.set(false);
+        }
+    });
 
     let messages = Memo::new(move |_| chat_messages.get().and_then(|res| res.ok()));
     let error = Memo::new(move |_| chat_messages.get().and_then(|res| res.err()));
@@ -396,22 +419,19 @@ pub fn ChatComponent() -> impl IntoView {
             send_chat.set((count, "".to_string()));
         }
     });
-    // --- FIX END ---
-
 
     view! {
         <div class="card">
             <h2 class="card-header">Chat</h2>
             <div class="card-body overflow-y-scroll">
-                <Show when=move || chat_messages.loading().get() fallback=|| ()>
-                    <p>"Loading chat..."</p>
-                </Show>
 
                 <Show when=move || error.get().is_some() fallback=|| ()>
                     <p>"ERROR: " {error.get().unwrap().to_string()}</p>
                 </Show>
 
-                <Show when=move || messages.get().is_some() fallback=|| ()>
+                <Show when=move || chat_messages.get().is_some()
+                    fallback=|| view! { <p>"Loading chat..."</p> }
+                >
                     <For
                         each=move || messages.get().unwrap_or_default()
                         key=|msg| msg.2 // timestamp
