@@ -2,11 +2,9 @@ use fmtsize::{Conventional, FmtSize};
 use leptos::{html::Input, *};
 use leptos::prelude::*;
 use leptos::ev::SubmitEvent;
+use leptos::task::spawn_local;
 use leptos_meta::*;
 use leptos_router::*;
-use leptos_reactive::{
-    create_resource, spawn_local, SignalGet
-};
 use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
 use ammonia::clean;
@@ -80,7 +78,7 @@ fn HomePage() -> impl IntoView {
             </div>
         </div>
         <br/>
-    }
+    }.into_any()
 }
 
 /// 404 - Not Found
@@ -269,13 +267,13 @@ pub fn FileListComponent(
                                         {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
                                     </span>
                                 </a>
-                            }
+                            }.into_any()
                         }
                     />
                 </div>
             </Show>
         </div>
-    }
+    }.into_any()
 }
 
 #[server]
@@ -306,7 +304,7 @@ pub async fn get_chat_messages() -> Result<Vec<(String, String, u64)>, ServerFnE
     Ok(chat_messages)
 }
 
-#[server]
+#[server(SendChatMessage, "/api")]
 pub async fn send_chat_message(
     chat_name: String,
     chat_message: String,
@@ -358,6 +356,7 @@ pub async fn send_chat_message(
         // Send signal to trigger SSE update
         _ = COUNT_CHANNEL.send(&1).await;
     }
+    println!("Chat messages: {:?}", chat_messages);
     Ok(())
 }
 
@@ -368,14 +367,6 @@ pub fn ChatComponent() -> impl IntoView {
     let send_chat_message = ServerAction::<SendChatMessage>::new();
 
     let (version, set_version) = signal(0);
-
-    // Create the resource for chat messages.
-    // The source signal `|| ()` means it will fetch once on load.
-    // We will trigger subsequent fetches manually.
-    // let chat_messages_resource = create_resource(
-    //     move || version.get(),
-    //     |_| async move { get_chat_messages().await },
-    // );
 
     // Create the resource only on the client:
     #[cfg(not(feature = "ssr"))]
@@ -393,21 +384,12 @@ pub fn ChatComponent() -> impl IntoView {
             )])
         });
 
-    // This Memo extracts the Vec from the resource.
-    // The rest of our code will only ever have to deal with this signal,
-    // which *always* contains a Vec, never an error or an option.
-    let messages = Memo::new(move |_| {
-        chat_messages_resource
-            .get()
-            .and_then(|res| res.ok())
-            .unwrap_or_default()
-    });
-
     // When the user successfully sends a message, we increment the version signal to trigger a refetch for them.
     Effect::new(move |_| {
         // .value() is a signal that returns Some(Ok(_)) on success
         if send_chat_message.value().get().is_some() {
             set_version.update(|v| *v += 1);
+            println!("Message sent, updating version to {}", version.get());
         }
     });
 
@@ -442,13 +424,18 @@ pub fn ChatComponent() -> impl IntoView {
                     // 3. The View is now simple. We use <Show> to handle the empty case.
                     // This is the correct way to do conditional rendering and will not cause type errors.
                     <Show
-                        when=move || !messages.get().is_empty()
+                        when=move || chat_messages_resource.get()
+                            .map(|res| res.is_ok())
+                            .unwrap_or(false)
                         fallback=|| view! { <p>"No messages yet."</p> }
                     >
                         <For
                             // `each` gets the data from our clean `messages` Memo.
                             // This pattern is `Fn` and is lifetime-safe.
-                            each=move || messages.get()
+                            each=move || chat_messages_resource
+                                .get()
+                                .and_then(|res| res.ok())
+                                .unwrap_or_default()
                             key=|msg| msg.2
                             children=move |(user, message, _)| {
                                 view! { <p><strong>{user}</strong>": " {message}</p> }
@@ -458,7 +445,7 @@ pub fn ChatComponent() -> impl IntoView {
                 </Suspense>
             </div>
             <div>
-                <ActionForm action=send_chat_message on:submit=on_submit>
+                <ActionForm action=send_chat_message on:submit:capture=on_submit>
                     <div class="input-group">
                         <input type="text" class="form-control" placeholder="Name" name="chat_name"/>
                         <input
@@ -473,7 +460,7 @@ pub fn ChatComponent() -> impl IntoView {
                 </ActionForm>
             </div>
         </div>
-    }
+    }.into_any()
 }
 
 #[cfg(feature = "ssr")]

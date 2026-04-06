@@ -38,3 +38,7 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 
 Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /shareboxx/files, or you can copy files onto a USB drive and mount that under /shareboxx/files for example.
 You may want to install a [malware detection tool](https://github.com/dividebysandwich/shareboxx/wiki/How-to-set-up-a-malware-scanner-to-automatically-scan-uploads) to automatically scan uploaded files.
+
+### Development
+
+To run locally for development/testing, execute ```cargo leptos watch```
