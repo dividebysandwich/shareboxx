@@ -113,7 +113,7 @@ pub fn App() -> impl IntoView {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ActiveTab {
+pub enum ActiveTab {
     Files,
     Chat,
 }
@@ -216,7 +216,7 @@ fn HomePage() -> impl IntoView {
                 </div>
 
                 <div class="panel panel-chat" class:active=move || active_tab.get() == ActiveTab::Chat>
-                    <ChatComponent chat_version=chat_version/>
+                    <ChatComponent chat_version=chat_version active_tab=active_tab/>
                 </div>
             </div>
         </div>
@@ -488,6 +488,7 @@ pub async fn send_chat_message(
 #[component]
 pub fn ChatComponent(
     chat_version: ReadSignal<u32>,
+    active_tab: ReadSignal<ActiveTab>,
 ) -> impl IntoView {
     let chat_input_ref: NodeRef<Input> = NodeRef::new();
     let name_ref: NodeRef<Input> = NodeRef::new();
@@ -516,8 +517,9 @@ pub fn ChatComponent(
         v
     });
 
-    // Auto-scroll chat to bottom when messages load or update
+    // Auto-scroll chat to bottom when messages update or tab switches to chat
     Effect::new(move |_: Option<()>| {
+        let _tab = active_tab.get(); // Track tab changes so switching to Chat triggers scroll
         if let Some(Ok(_)) = chat_messages_resource.get() {
             #[cfg(not(feature = "ssr"))]
             {

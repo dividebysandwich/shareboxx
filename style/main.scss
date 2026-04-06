@@ -336,8 +336,7 @@ input[type="file"] {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 200px;
-  max-height: 60vh;
+  min-height: 0; // Critical: allows flex child to shrink below content size for overflow scroll
 }
 
 .chat-message {
@@ -370,6 +369,7 @@ input[type="file"] {
 }
 
 .chat-input-form {
+  flex-shrink: 0;
   border-top: 1px solid var(--border);
   padding: 12px;
 }
@@ -460,13 +460,7 @@ input[type="file"] {
   }
 
   .chat-card {
-    max-height: calc(100vh - 90px);
-  }
-
-  .chat-messages {
-    max-height: none;
-    flex: 1;
-    overflow-y: auto;
+    height: calc(100vh - 90px);
   }
 }
 
@@ -481,12 +475,7 @@ input[type="file"] {
     flex: 1;
 
     .chat-card {
-      min-height: calc(100vh - 160px);
-    }
-
-    .chat-messages {
-      max-height: none;
-      flex: 1;
+      height: calc(100vh - 120px);
     }
   }
 

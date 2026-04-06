@@ -196,6 +196,12 @@ async fn counter_events() -> impl actix_web::Responder {
                         Err(_) => break,
                     }
                 }
+                // Periodic heartbeat to detect dead connections
+                _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    if tx.send(Bytes::from(": heartbeat\n\n")).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
 
