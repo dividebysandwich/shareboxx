@@ -1,7 +1,6 @@
 use fmtsize::{Conventional, FmtSize};
 use leptos::{html::Input, *};
 use leptos::prelude::*;
-use leptos::ev::SubmitEvent;
 use leptos::task::spawn_local;
 use leptos_meta::*;
 use leptos_router::*;
@@ -363,66 +362,45 @@ pub async fn send_chat_message(
 #[component]
 pub fn ChatComponent() -> impl IntoView {
     let chat_input_ref: NodeRef<Input> = NodeRef::new();
-
     let send_chat_message = ServerAction::<SendChatMessage>::new();
+    let (sse_version, set_sse_version) = signal(0u32);
 
-    let (version, set_version) = signal(0);
+    // Resource refetches when action completes (version increments) or SSE update arrives
+    let chat_messages_resource = Resource::new(
+        move || (sse_version.get(), send_chat_message.version().get()),
+        |_| get_chat_messages()
+    );
 
-    // Create the resource only on the client:
-    #[cfg(not(feature = "ssr"))]
-    let chat_messages_resource = Resource::new(move || version.get(), |_| async { get_chat_messages().await });
-
-    // On the server, supply a dummy resource so SSR can render:
-    #[cfg(feature = "ssr")]
-    let chat_messages_resource =
-        Resource::new(move || version.get(), |_| async {
-            // explicitly tell Rust what error type we’re using:
-            Ok::<Vec<(String, String, u64)>, ServerFnError>(vec![(
-                "".to_string(),
-                "".to_string(),
-                0u64,
-            )])
-        });
-
-    // When the user successfully sends a message, we increment the version signal to trigger a refetch for them.
-    Effect::new(move |_| {
-        // .value() is a signal that returns Some(Ok(_)) on success
-        if send_chat_message.value().get().is_some() {
-            set_version.update(|v| *v += 1);
-            println!("Message sent, updating version to {}", version.get());
+    // Clear input after action completes
+    Effect::new(move |prev: Option<usize>| {
+        let v = send_chat_message.version().get();
+        if prev.is_some() && v > 0 {
+            if let Some(input) = chat_input_ref.get() {
+                input.set_value("");
+            }
         }
+        v
     });
 
-    // When an event arrives from another user, we also increment the version signal to trigger a refetch.
+    // When an event arrives from another user, increment SSE version to trigger refetch
     #[cfg(not(feature = "ssr"))]
     {
         use futures::StreamExt;
         spawn_local(async move {
             let mut source = gloo_net::eventsource::futures::EventSource::new("/ws")
-                .expect("couldn't connect to SSE stream");
+                .expect("couldn’t connect to SSE stream");
             let mut stream = source.subscribe("message").unwrap();
             while let Some(_) = stream.next().await {
-                set_version.update(|v| *v += 1);
+                set_sse_version.update(|v| *v += 1);
             }
         });
     }
-
-    // This on_submit now only needs to clear the input.
-    // The ActionForm handles preventing the default refresh automatically.
-    let on_submit = move |ev: SubmitEvent| {
-        if let Some(input) = chat_input_ref.get() {
-            input.set_value("");
-            ev.prevent_default();
-        }
-    };
 
     view! {
         <div class="card">
             <h2 class="card-header">Chat</h2>
             <div class="card-body overflow-y-scroll" style="height: 300px;">
                 <Suspense fallback=|| view! { <p>"Loading..."</p> }>
-                    // 3. The View is now simple. We use <Show> to handle the empty case.
-                    // This is the correct way to do conditional rendering and will not cause type errors.
                     <Show
                         when=move || chat_messages_resource.get()
                             .map(|res| res.is_ok())
@@ -430,8 +408,6 @@ pub fn ChatComponent() -> impl IntoView {
                         fallback=|| view! { <p>"No messages yet."</p> }
                     >
                         <For
-                            // `each` gets the data from our clean `messages` Memo.
-                            // This pattern is `Fn` and is lifetime-safe.
                             each=move || chat_messages_resource
                                 .get()
                                 .and_then(|res| res.ok())
@@ -445,7 +421,7 @@ pub fn ChatComponent() -> impl IntoView {
                 </Suspense>
             </div>
             <div>
-                <ActionForm action=send_chat_message on:submit:capture=on_submit>
+                <ActionForm action=send_chat_message>
                     <div class="input-group">
                         <input type="text" class="form-control" placeholder="Name" name="chat_name"/>
                         <input
