@@ -217,13 +217,52 @@ a {
 
 // ── Upload ──────────────────────────────────
 
-.upload-card .card-body {
-  form {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
+.upload-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 150ms ease;
+}
+
+.progress-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  min-width: 40px;
+  text-align: right;
+}
+
+.upload-success {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--success);
+}
+
+.upload-error {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--danger);
 }
 
 input[type="file"] {

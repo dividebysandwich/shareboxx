@@ -126,6 +126,7 @@ fn HomePage() -> impl IntoView {
     let (user_count, set_user_count) = signal(0u32);
     let (chat_version, set_chat_version) = signal(0u32);
     let (has_unread, set_has_unread) = signal(false);
+    let (file_list_version, set_file_list_version) = signal(0u32);
 
     // SSE connection for live chat updates and user count
     #[cfg(not(feature = "ssr"))]
@@ -203,14 +204,14 @@ fn HomePage() -> impl IntoView {
                         </div>
                     </div>
 
-                    <FileUploadComponent path=path/>
+                    <FileUploadComponent path=path set_file_list_version=set_file_list_version/>
 
                     <div class="card">
                         <div class="card-header">
                             <h2>"Download Files"</h2>
                         </div>
                         <div class="card-body">
-                            <FileListComponent path=path set_path=set_path/>
+                            <FileListComponent path=path set_path=set_path file_list_version=file_list_version/>
                         </div>
                     </div>
                 </div>
@@ -296,9 +297,73 @@ pub async fn get_file_list(
 #[component]
 pub fn FileUploadComponent(
     path: ReadSignal<String>,
+    set_file_list_version: WriteSignal<u32>,
 ) -> impl IntoView {
     let file_input_ref: NodeRef<Input> = NodeRef::new();
     let (has_file, set_has_file) = signal(false);
+    let (progress, set_progress) = signal(-1.0f64); // -1 = idle, 0..1 = uploading
+    let (upload_status, set_upload_status) = signal(String::new());
+
+    let on_upload_click = move |_| {
+        #[cfg(not(feature = "ssr"))]
+        {
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen::JsCast;
+
+            let Some(input) = file_input_ref.get() else { return };
+            let html_input: &web_sys::HtmlInputElement = input.unchecked_ref();
+            let Some(files) = html_input.files() else { return };
+            if files.length() == 0 { return; }
+
+            let form_data = web_sys::FormData::new().unwrap();
+            form_data.append_with_str("upload_path", &path.get_untracked()).unwrap();
+            for i in 0..files.length() {
+                let file = files.get(i).unwrap();
+                form_data.append_with_blob_and_filename("file", &file, &file.name()).unwrap();
+            }
+
+            let xhr = web_sys::XmlHttpRequest::new().unwrap();
+            xhr.open("POST", "/upload").unwrap();
+
+            // Progress handler
+            {
+                let closure = Closure::<dyn FnMut(_)>::new(move |event: web_sys::ProgressEvent| {
+                    if event.length_computable() && event.total() > 0.0 {
+                        set_progress.set(event.loaded() / event.total());
+                    }
+                });
+                xhr.upload().unwrap().set_onprogress(Some(closure.as_ref().unchecked_ref()));
+                closure.forget();
+            }
+
+            // Completion handler
+            {
+                let xhr2 = xhr.clone();
+                let input_ref = file_input_ref;
+                let closure = Closure::<dyn FnMut()>::new(move || {
+                    if xhr2.ready_state() == 4 {
+                        if xhr2.status().unwrap_or(0) == 200 {
+                            set_upload_status.set("done".to_string());
+                            set_file_list_version.update(|v| *v += 1);
+                            if let Some(el) = input_ref.get() {
+                                el.set_value("");
+                            }
+                            set_has_file.set(false);
+                        } else {
+                            set_upload_status.set("error".to_string());
+                        }
+                        set_progress.set(-1.0);
+                    }
+                });
+                xhr.set_onreadystatechange(Some(closure.as_ref().unchecked_ref()));
+                closure.forget();
+            }
+
+            set_upload_status.set(String::new());
+            set_progress.set(0.0);
+            xhr.send_with_opt_form_data(Some(&form_data)).unwrap();
+        }
+    };
 
     view! {
         <div class="card upload-card">
@@ -306,17 +371,36 @@ pub fn FileUploadComponent(
                 <h2>"Upload Files"</h2>
             </div>
             <div class="card-body">
-                <form action="/upload" method="post" enctype="multipart/form-data">
-                    <input type="hidden" name="upload_path" value={path.clone()}/>
-                    <input type="file" multiple name="file" node_ref=file_input_ref
+                <div class="upload-controls">
+                    <input type="file" multiple node_ref=file_input_ref
                         on:change=move |_| {
                             if let Some(input) = file_input_ref.get() {
                                 set_has_file.set(!input.value().is_empty());
+                                set_upload_status.set(String::new());
                             }
                         }
                     />
-                    <button class="btn-primary" type="submit" disabled=move || !has_file.get()>"Upload"</button>
-                </form>
+                    <button class="btn-primary" type="button"
+                        disabled=move || !has_file.get() || (progress.get() >= 0.0)
+                        on:click=on_upload_click
+                    >
+                        {move || if progress.get() >= 0.0 { "Uploading..." } else { "Upload" }}
+                    </button>
+                </div>
+                <Show when={move || progress.get() >= 0.0} fallback=|| ()>
+                    <div class="upload-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" style=move || format!("width: {}%", (progress.get() * 100.0) as u32)></div>
+                        </div>
+                        <span class="progress-text">{move || format!("{}%", (progress.get() * 100.0) as u32)}</span>
+                    </div>
+                </Show>
+                <Show when=move || upload_status.get() == "done" fallback=|| ()>
+                    <div class="upload-success">"Upload complete!"</div>
+                </Show>
+                <Show when=move || upload_status.get() == "error" fallback=|| ()>
+                    <div class="upload-error">"Upload failed. Please try again."</div>
+                </Show>
             </div>
         </div>
     }
@@ -326,9 +410,13 @@ pub fn FileUploadComponent(
 pub fn FileListComponent(
     path: ReadSignal<String>,
     set_path: WriteSignal<String>,
+    file_list_version: ReadSignal<u32>,
 ) -> impl IntoView {
 
-    let directory_listing = Resource::new(move|| path.get(), get_file_list);
+    let directory_listing = Resource::new(
+        move || (path.get(), file_list_version.get()),
+        |(p, _)| get_file_list(p),
+    );
 
     view! {
         <div>

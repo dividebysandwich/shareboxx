@@ -127,7 +127,7 @@ async fn save_files(
         f.file.persist(new_path).unwrap();
     }
 
-    Ok(actix_web::web::Redirect::to("/").see_other())
+    Ok(actix_web::HttpResponse::Ok().body("ok"))
 }
 
 #[cfg(feature = "ssr")]

@@ -1,6 +1,6 @@
 [package]
 name = "shareboxx"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 
 [lib]
@@ -28,11 +28,22 @@ tokio-stream = { version = "0.1.18", features = ["sync"] }
 lazy_static = "1.5"
 once_cell = "1.21.4"
 gloo-net = "0.7.0"
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Blob",
+    "File",
+    "FileList",
+    "FormData",
+    "HtmlInputElement",
+    "ProgressEvent",
+    "XmlHttpRequest",
+    "XmlHttpRequestUpload",
+] }
 simple_logger = "5.2.0"
 
 [features]
-csr = ["leptos/csr"]
-hydrate = ["leptos/hydrate"]
+csr = ["leptos/csr", "dep:js-sys", "dep:web-sys"]
+hydrate = ["leptos/hydrate", "dep:js-sys", "dep:web-sys"]
 ssr = [
   "dep:actix-files",
   "dep:actix-web",
