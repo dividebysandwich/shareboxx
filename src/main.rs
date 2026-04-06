@@ -58,8 +58,10 @@ async fn main() -> std::io::Result<()> {
 
             .leptos_routes(
                 routes.to_owned(),
-                // The root component is passed as a closure
-                || view! { <App/> },
+                {
+                    let options = leptos_options.clone();
+                    move || shareboxx::app::shell(options.clone())
+                },
             )
             .app_data(web::Data::new(leptos_options.to_owned()))
             // Store temp files on same drive, otherwise .persist() will fail due to cross-device link error
@@ -154,11 +156,12 @@ async fn counter_events() -> impl actix_web::Responder {
     use actix_web::web;
     use futures::StreamExt;
     use shareboxx::app::ssr_imports::*;
+    use tokio_stream::wrappers::BroadcastStream;
 
     let stream = futures::stream::once(async {
         shareboxx::app::get_message_count().await.unwrap_or(0)
     })
-    .chain(COUNT_CHANNEL.clone())
+    .chain(BroadcastStream::new(COUNT_CHANNEL.subscribe()).filter_map(|r| async { r.ok() }))
     .map(|value| {
         Ok(web::Bytes::from(format!(
             "event: message\ndata: {value}\n\n"

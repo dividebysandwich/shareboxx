@@ -2,28 +2,38 @@ use fmtsize::{Conventional, FmtSize};
 use leptos::{html::Input, *};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos::config::LeptosOptions;
 use leptos_meta::*;
 use leptos_router::*;
 use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
 use ammonia::clean;
 
+pub fn shell(options: LeptosOptions) -> impl IntoView {
+    view! {
+        <!DOCTYPE html>
+        <html data-bs-theme="dark">
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <AutoReload options=options.clone() />
+                <HydrationScripts options />
+                <MetaTags />
+            </head>
+            <body>
+                <App/>
+            </body>
+        </html>
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
-    // Provides context that manages stylesheets, titles, meta tags, etc.
     provide_meta_context();
 
     view! {
-        <Html attr:data-bs-theme="dark"/>
-        <head>
-        // injects a stylesheet into the document <head>
-        // id=leptos means cargo-leptos will hot-reload this stylesheet
         <Stylesheet id="leptos" href="/pkg/shareboxx.css"/>
-
-        // sets the document title
         <Title text="Welcome to ShareBoxx"/>
-        </head>
-        // content for this welcome page
         <Router>
             <main>
                 <Routes fallback=HomePage>
@@ -184,93 +194,69 @@ pub fn FileListComponent(
 ) -> impl IntoView {
 
     let directory_listing = Resource::new(move|| path.get(), get_file_list);
-    let loading = signal(false);
-
-    spawn_local({
-        let data = directory_listing.clone();
-        let loading = loading.clone();
-        // run after mount
-        async move {
-            loading.1.set(true);
-            // Only run client-side
-            let val = get_file_list(path.get()).await;
-            data.set(Some(val));
-            loading.1.set(false);
-        }
-    });
-    
-    // Create a derived memo that only contains a value when the resource has loaded successfully.
-    let files = Memo::new(move |_| directory_listing.get().and_then(|res| res.ok()));
-    // Create another memo that only contains a value when the resource has an error.
-    let error = Memo::new(move |_| directory_listing.get().and_then(|res| res.err()));
 
     view! {
         <div>
             "Current Directory: " {path}
             <p/>
 
-            // Use <Show> to display the loading state.
-            <Show when=move || loading.0.get() fallback=|| ()>
-                <p>"Loading..."</p>
-            </Show>
+            <Suspense fallback=|| view! { <p>"Loading..."</p> }>
+                <Show
+                    when=move || directory_listing.get()
+                        .map(|res| res.is_ok())
+                        .unwrap_or(false)
+                    fallback=move || {
+                        directory_listing.get()
+                            .and_then(|r| r.err())
+                            .map(|e| view! { <p>"ERROR: " {e.to_string()}</p> })
+                    }
+                >
+                    <div class="list-group">
+                        <For
+                            each=move || directory_listing.get()
+                                .and_then(|r| r.ok())
+                                .unwrap_or_default()
+                            key=|file| file.1.clone()
+                            children=move |n| {
+                                let (file_type, file_name, file_size) = n;
+                                let link_target = if file_type == "f" {
+                                    format!("/files/{}/{}", path.get_untracked(), &file_name)
+                                } else { "#".to_string() };
 
-            // Use <Show> to display an error if one exists.
-            <Show
-                when=move || error.get().is_some()
-                fallback=|| ()
-            >
-                <p>"ERROR: " {error.get().unwrap().to_string()}</p>
-            </Show>
-
-            // Use <Show> to display the file list when it's successfully loaded.
-            <Show
-                when=move || files.get().is_some()
-                fallback=|| ()
-            >
-                <div class="list-group">
-                    <For
-                        each=move || files.get().unwrap_or_default()
-                        key=|file| file.1.clone()
-                        children=move |n| {
-                            let (file_type, file_name, file_size) = n;
-                            let link_target = if file_type == "f" {
-                                format!("/files/{}/{}", path.get_untracked(), &file_name)
-                            } else { "#".to_string() };
-
-                            view! {
-                                <a
-                                    href=link_target
-                                    rel="external"
-                                    class="list-group-item list-group-item-action"
-                                    on:click=move |ev| {
-                                        // on:click logic remains the same
-                                        if file_name == ".." {
-                                            ev.prevent_default();
-                                            let current_path = path.get();
-                                            let mut path_parts: Vec<&str> = current_path.trim_end_matches('/').split('/').collect();
-                                            path_parts.pop();
-                                            let new_path = path_parts.join("/");
-                                            set_path.set(if new_path.is_empty() { "".to_string() } else { format!("{}/", new_path) });
-                                        } else if file_type == "d" {
-                                            ev.prevent_default();
-                                            set_path.update(|p| {
-                                                p.push_str(&file_name);
-                                                p.push('/');
-                                            });
+                                view! {
+                                    <a
+                                        href=link_target
+                                        rel="external"
+                                        class="list-group-item list-group-item-action"
+                                        on:click=move |ev| {
+                                            if file_name == ".." {
+                                                ev.prevent_default();
+                                                let current_path = path.get();
+                                                let mut path_parts: Vec<&str> = current_path.trim_end_matches('/').split('/').collect();
+                                                path_parts.pop();
+                                                let new_path = path_parts.join("/");
+                                                set_path.set(if new_path.is_empty() { "".to_string() } else { format!("{}/", new_path) });
+                                            } else if file_type == "d" {
+                                                ev.prevent_default();
+                                                set_path.update(|p| {
+                                                    p.push_str(&file_name);
+                                                    p.push('/');
+                                                });
+                                            }
                                         }
-                                    }
-                                >
-                                    <img src={if file_type == "d" { "/assets/folder.png" } else { "/assets/file.png" }} style="width: 48px; height: 48px; margin-right: 10px"/>
-                                    {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
-                                    <span class="float-end">
-                                        {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
-                                    </span>
-                                </a>
-                            }.into_any()
-                        }
-                    />
-                </div>
-            </Show>
+                                    >
+                                        <img src={if file_type == "d" { "/assets/folder.png" } else { "/assets/file.png" }} style="width: 48px; height: 48px; margin-right: 10px"/>
+                                        {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
+                                        <span class="float-end">
+                                            {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
+                                        </span>
+                                    </a>
+                                }.into_any()
+                            }
+                        />
+                    </div>
+                </Show>
+            </Suspense>
         </div>
     }.into_any()
 }
@@ -353,7 +339,7 @@ pub async fn send_chat_message(
             .map_err(|e| format!("Error writing chat file: {:?}", e)).unwrap();
         
         // Send signal to trigger SSE update
-        _ = COUNT_CHANNEL.send(&1).await;
+        _ = COUNT_CHANNEL.send(1);
     }
     println!("Chat messages: {:?}", chat_messages);
     Ok(())
@@ -362,8 +348,10 @@ pub async fn send_chat_message(
 #[component]
 pub fn ChatComponent() -> impl IntoView {
     let chat_input_ref: NodeRef<Input> = NodeRef::new();
+    let name_ref: NodeRef<Input> = NodeRef::new();
     let send_chat_message = ServerAction::<SendChatMessage>::new();
     let (sse_version, set_sse_version) = signal(0u32);
+    let (saved_name, set_saved_name) = signal(String::new());
 
     // Resource refetches when action completes (version increments) or SSE update arrives
     let chat_messages_resource = Resource::new(
@@ -371,12 +359,16 @@ pub fn ChatComponent() -> impl IntoView {
         |_| get_chat_messages()
     );
 
-    // Clear input after action completes
+    // After action completes, clear message input and restore name
     Effect::new(move |prev: Option<usize>| {
         let v = send_chat_message.version().get();
         if prev.is_some() && v > 0 {
             if let Some(input) = chat_input_ref.get() {
                 input.set_value("");
+            }
+            // Restore name in case ActionForm reset the form
+            if let Some(input) = name_ref.get() {
+                input.set_value(&saved_name.get_untracked());
             }
         }
         v
@@ -423,7 +415,14 @@ pub fn ChatComponent() -> impl IntoView {
             <div>
                 <ActionForm action=send_chat_message>
                     <div class="input-group">
-                        <input type="text" class="form-control" placeholder="Name" name="chat_name"/>
+                        <input type="text" class="form-control" placeholder="Name" name="chat_name"
+                            node_ref=name_ref
+                            on:input=move |_| {
+                                if let Some(input) = name_ref.get() {
+                                    set_saved_name.set(input.value());
+                                }
+                            }
+                        />
                         <input
                             type="text"
                             class="form-control"
@@ -441,14 +440,16 @@ pub fn ChatComponent() -> impl IntoView {
 
 #[cfg(feature = "ssr")]
 pub mod ssr_imports {
-    pub use broadcaster::BroadcastChannel;
     pub use once_cell::sync::OnceCell;
     pub use std::sync::atomic::{AtomicI32, Ordering};
 
     pub static COUNT: AtomicI32 = AtomicI32::new(0);
 
     lazy_static::lazy_static! {
-        pub static ref COUNT_CHANNEL: BroadcastChannel<i32> = BroadcastChannel::new();
+        pub static ref COUNT_CHANNEL: tokio::sync::broadcast::Sender<i32> = {
+            let (tx, _rx) = tokio::sync::broadcast::channel(16);
+            tx
+        };
     }
 
     static LOG_INIT: OnceCell<()> = OnceCell::new();
@@ -476,7 +477,7 @@ pub async fn adjust_message_count(
 
     let new = COUNT.load(Ordering::Relaxed) + delta;
     COUNT.store(new, Ordering::Relaxed);
-    _ = COUNT_CHANNEL.send(&new).await;
+    _ = COUNT_CHANNEL.send(new);
     println!("message = {:?}", msg);
     Ok(new)
 }
