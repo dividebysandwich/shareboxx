@@ -19,3 +19,4 @@ Cargo.lock
 /target
 /files
 chat.json
+stats.json
