@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+#
+# ShareBoxx WiFi Access Point & Captive Portal Setup
+#
+# This script configures a Linux machine (typically a Raspberry Pi) as a
+# standalone WiFi access point running ShareBoxx. It sets up:
+#   - hostapd   (WiFi access point)
+#   - dnsmasq   (DHCP + DNS captive portal)
+#   - dhcpcd    (static IP on the wireless interface)
+#   - iptables  (HTTP/HTTPS redirect to ShareBoxx)
+#   - nginx     (SSL termination with self-signed cert)
+#   - shareboxx (systemd service)
+#
+# Run as root after installing the shareboxx .deb package:
+#   sudo shareboxx-setup
+#
+set -euo pipefail
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[info]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[ok]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
+err()   { echo -e "${RED}[error]${NC} $*" >&2; }
+step()  { echo -e "\n${BOLD}── $* ──${NC}"; }
+
+ask() {
+    local prompt="$1" default="$2" reply
+    echo -en "${BOLD}$prompt${NC} [${default}]: "
+    read -r reply
+    echo "${reply:-$default}"
+}
+
+# ── Preflight checks ────────────────────────────────────────────────────────
+
+if [[ $EUID -ne 0 ]]; then
+    err "This script must be run as root (sudo shareboxx-setup)"
+    exit 1
+fi
+
+if ! command -v shareboxx &>/dev/null; then
+    warn "shareboxx binary not found in PATH."
+    warn "Install the .deb package first: sudo dpkg -i shareboxx_*.deb"
+    echo -en "Continue anyway? [y/N]: "
+    read -r reply
+    [[ "$reply" =~ ^[Yy] ]] || exit 1
+fi
+
+# ── Detect WiFi interfaces ──────────────────────────────────────────────────
+
+step "WiFi Interface Detection"
+
+mapfile -t WIFI_IFACES < <(
+    iw dev 2>/dev/null | awk '/Interface/{print $2}' || true
+)
+
+if [[ ${#WIFI_IFACES[@]} -eq 0 ]]; then
+    # Fallback: check /sys/class/net for wireless devices
+    for iface in /sys/class/net/*/wireless; do
+        [[ -d "$iface" ]] && WIFI_IFACES+=("$(basename "$(dirname "$iface")")")
+    done
+fi
+
+if [[ ${#WIFI_IFACES[@]} -eq 0 ]]; then
+    warn "No WiFi interfaces detected."
+    warn "Make sure your WiFi adapter is plugged in and drivers are loaded."
+    DEFAULT_IFACE="wlan0"
+else
+    info "Found WiFi interface(s): ${WIFI_IFACES[*]}"
+    DEFAULT_IFACE="${WIFI_IFACES[0]}"
+fi
+
+# ── Interactive configuration ────────────────────────────────────────────────
+
+step "Configuration"
+
+echo -e "Configure your ShareBoxx access point. Press Enter to accept defaults.\n"
+
+IFACE=$(ask    "WiFi interface"    "$DEFAULT_IFACE")
+SSID=$(ask     "Access point name (SSID)" "ShareBoxx")
+CHANNEL=$(ask  "WiFi channel (1-11)"      "6")
+COUNTRY=$(ask  "Country code (ISO 3166)"  "US")
+AP_IP=$(ask    "Access point IP address"  "192.168.4.1")
+DHCP_START=$(ask "DHCP range start"       "192.168.4.2")
+DHCP_END=$(ask   "DHCP range end"         "192.168.4.254")
+SUBNET="255.255.255.0"
+
+# Derive network from AP_IP (assumes /24)
+NETWORK_PREFIX="${AP_IP%.*}"
+
+echo ""
+info "Interface:  $IFACE"
+info "SSID:       $SSID"
+info "Channel:    $CHANNEL"
+info "Country:    $COUNTRY"
+info "AP IP:      $AP_IP/24"
+info "DHCP range: $DHCP_START – $DHCP_END"
+echo ""
+echo -en "${BOLD}Proceed with setup?${NC} [Y/n]: "
+read -r confirm
+[[ "$confirm" =~ ^[Nn] ]] && { info "Aborted."; exit 0; }
+
+# ── Install packages ────────────────────────────────────────────────────────
+
+step "Installing system packages"
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -qq
+apt-get install -y -qq dhcpcd5 dnsmasq hostapd nginx \
+    netfilter-persistent iptables-persistent 2>/dev/null \
+    || apt-get install -y -qq dhcpcd dnsmasq hostapd nginx \
+    netfilter-persistent iptables-persistent
+
+ok "Packages installed"
+
+# Stop services while we configure them
+systemctl stop dnsmasq   2>/dev/null || true
+systemctl stop hostapd   2>/dev/null || true
+systemctl stop shareboxx 2>/dev/null || true
+
+# ── Configure static IP (dhcpcd) ────────────────────────────────────────────
+
+step "Configuring static IP on $IFACE"
+
+DHCPCD_CONF="/etc/dhcpcd.conf"
+MARKER="# --- ShareBoxx AP config ---"
+
+# Remove any previous ShareBoxx block
+if grep -qF "$MARKER" "$DHCPCD_CONF" 2>/dev/null; then
+    sed -i "/$MARKER/,/^$/d" "$DHCPCD_CONF"
+    info "Removed previous ShareBoxx config from dhcpcd.conf"
+fi
+
+cat >> "$DHCPCD_CONF" <<EOF
+$MARKER
+interface $IFACE
+    static ip_address=${AP_IP}/24
+    nohook wpa_supplicant
+
+EOF
+
+systemctl restart dhcpcd 2>/dev/null || true
+ok "Static IP ${AP_IP}/24 configured on $IFACE"
+
+# ── Configure DHCP & DNS (dnsmasq) ──────────────────────────────────────────
+
+step "Configuring DHCP server (dnsmasq)"
+
+DNSMASQ_CONF="/etc/dnsmasq.d/shareboxx.conf"
+
+# Backup existing main config if it hasn't been backed up
+if [[ -f /etc/dnsmasq.conf && ! -f /etc/dnsmasq.conf.shareboxx-backup ]]; then
+    cp /etc/dnsmasq.conf /etc/dnsmasq.conf.shareboxx-backup
+    info "Backed up /etc/dnsmasq.conf"
+fi
+
+cat > "$DNSMASQ_CONF" <<EOF
+# ShareBoxx DHCP & captive-portal DNS
+interface=$IFACE
+dhcp-range=${DHCP_START},${DHCP_END},${SUBNET},24h
+
+# Redirect ALL domains to the access point (captive portal)
+address=/#/${AP_IP}
+EOF
+
+# Prevent dnsmasq from touching resolv.conf
+if ! grep -qF "DNSMASQ_EXCEPT=lo" /etc/default/dnsmasq 2>/dev/null; then
+    echo "DNSMASQ_EXCEPT=lo" >> /etc/default/dnsmasq
+fi
+
+systemctl unmask dnsmasq.service 2>/dev/null || true
+systemctl enable dnsmasq.service
+ok "dnsmasq configured (DHCP ${DHCP_START}–${DHCP_END}, captive DNS)"
+
+# ── Configure access point (hostapd) ────────────────────────────────────────
+
+step "Configuring WiFi access point (hostapd)"
+
+cat > /etc/hostapd/hostapd.conf <<EOF
+# ShareBoxx WiFi Access Point
+interface=$IFACE
+driver=nl80211
+hw_mode=g
+channel=$CHANNEL
+ieee80211d=1
+country_code=$COUNTRY
+ieee80211n=1
+wmm_enabled=1
+
+ssid=$SSID
+auth_algs=1
+ap_isolate=1
+EOF
+
+# Point hostapd daemon config to our file (needed on some distros)
+if [[ -f /etc/default/hostapd ]]; then
+    sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+fi
+
+rfkill unblock wlan 2>/dev/null || true
+systemctl unmask hostapd 2>/dev/null || true
+systemctl enable hostapd
+ok "hostapd configured (SSID: $SSID, channel $CHANNEL)"
+
+# ── Configure iptables (captive portal redirect) ────────────────────────────
+
+step "Configuring firewall rules (captive portal)"
+
+# Enable IP forwarding
+sed -i 's/^#\?net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+
+# Flush old ShareBoxx rules (idempotent re-run)
+iptables -t nat -S PREROUTING 2>/dev/null | grep -F "shareboxx" | while read -r rule; do
+    iptables -t nat $(echo "$rule" | sed 's/^-A/-D/') 2>/dev/null || true
+done
+
+# Redirect HTTP → ShareBoxx (port 3000)
+iptables -t nat -I PREROUTING -i "$IFACE" -p tcp --dport 80 \
+    -j DNAT --to-destination "${AP_IP}:3000" \
+    -m comment --comment "shareboxx-http"
+
+# Redirect HTTPS → nginx (port 3443)
+iptables -t nat -I PREROUTING -i "$IFACE" -p tcp --dport 443 \
+    -j DNAT --to-destination "${AP_IP}:3443" \
+    -m comment --comment "shareboxx-https"
+
+# Block SSH from the WiFi interface (security)
+iptables -C INPUT -i "$IFACE" -p tcp --dport 22 -j DROP 2>/dev/null \
+    || iptables -A INPUT -i "$IFACE" -p tcp --dport 22 -j DROP
+
+netfilter-persistent save 2>/dev/null || true
+ok "iptables rules configured (HTTP→:3000, HTTPS→:3443, SSH blocked on $IFACE)"
+
+# ── Generate SSL certificate & configure nginx ──────────────────────────────
+
+step "Setting up SSL (nginx reverse proxy)"
+
+CERT_PATH="/etc/ssl/certs/shareboxx-selfsigned.crt"
+KEY_PATH="/etc/ssl/private/shareboxx-selfsigned.key"
+
+if [[ -f "$CERT_PATH" && -f "$KEY_PATH" ]]; then
+    info "SSL certificate already exists, keeping it."
+    echo -en "  Regenerate? [y/N]: "
+    read -r regen
+    [[ "$regen" =~ ^[Yy] ]] && REGEN_CERT=1 || REGEN_CERT=0
+else
+    REGEN_CERT=1
+fi
+
+if [[ "$REGEN_CERT" -eq 1 ]]; then
+    openssl req -x509 -nodes -days 3650 \
+        -newkey rsa:2048 \
+        -keyout "$KEY_PATH" \
+        -out "$CERT_PATH" \
+        -subj "/CN=shareboxx.lan/O=ShareBoxx/C=$COUNTRY" \
+        2>/dev/null
+    ok "Self-signed certificate generated (valid 10 years)"
+fi
+
+cat > /etc/nginx/sites-available/shareboxx <<EOF
+server {
+    listen 3443 ssl http2 default_server;
+    listen [::]:3443 ssl http2;
+    server_name shareboxx.lan $AP_IP;
+
+    ssl_certificate     $CERT_PATH;
+    ssl_certificate_key $KEY_PATH;
+
+    client_max_body_size 10G;
+
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_redirect     off;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+    }
+}
+EOF
+
+# Enable site, remove default
+ln -sf /etc/nginx/sites-available/shareboxx /etc/nginx/sites-enabled/shareboxx
+rm -f /etc/nginx/sites-enabled/default
+
+nginx -t 2>/dev/null && ok "nginx configuration valid" || {
+    err "nginx configuration test failed!"
+    nginx -t
+    exit 1
+}
+
+systemctl enable nginx
+ok "nginx configured (SSL reverse proxy on :3443)"
+
+# ── Start all services ──────────────────────────────────────────────────────
+
+step "Starting services"
+
+systemctl restart dhcpcd    2>/dev/null || true
+systemctl restart dnsmasq
+systemctl restart hostapd
+systemctl restart nginx
+systemctl restart shareboxx
+
+# Quick health check
+sleep 2
+SERVICES=("hostapd" "dnsmasq" "nginx" "shareboxx")
+ALL_OK=1
+for svc in "${SERVICES[@]}"; do
+    if systemctl is-active --quiet "$svc"; then
+        ok "$svc is running"
+    else
+        err "$svc failed to start"
+        ALL_OK=0
+    fi
+done
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+
+step "Setup Complete"
+
+if [[ $ALL_OK -eq 1 ]]; then
+    echo -e "${GREEN}"
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║              ShareBoxx is ready!                     ║"
+    echo "  ╠══════════════════════════════════════════════════════╣"
+    echo "  ║                                                      ║"
+    echo "  ║  WiFi network:  $SSID"
+    echo "  ║  Web UI:        http://${AP_IP}:3000"
+    echo "  ║  HTTPS:         https://${AP_IP}:3443"
+    echo "  ║  Stats:         http://${AP_IP}:3000/stats"
+    echo "  ║                                                      ║"
+    echo "  ║  Connect to the '$SSID' WiFi network."
+    echo "  ║  Any website will redirect to ShareBoxx.             ║"
+    echo "  ║                                                      ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+else
+    echo ""
+    warn "Some services failed to start. Check with:"
+    echo "  journalctl -u hostapd -u dnsmasq -u nginx -u shareboxx --no-pager -n 30"
+fi
+
+echo "Configuration files:"
+echo "  hostapd:   /etc/hostapd/hostapd.conf"
+echo "  dnsmasq:   $DNSMASQ_CONF"
+echo "  dhcpcd:    $DHCPCD_CONF"
+echo "  nginx:     /etc/nginx/sites-available/shareboxx"
+echo "  shareboxx: /etc/systemd/system/shareboxx.service"
+echo "  files:     /var/lib/shareboxx/files/"
+echo ""
+echo "To reconfigure, run: sudo shareboxx-setup"
+echo "To check status:     systemctl status shareboxx"

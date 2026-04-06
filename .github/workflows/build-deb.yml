@@ -92,6 +92,10 @@ jobs:
           fi
           chmod 755 "${DEB_DIR}/usr/bin/${PKG_NAME}"
 
+          # Setup script
+          cp access-point/shareboxx-setup "${DEB_DIR}/usr/bin/shareboxx-setup"
+          chmod 755 "${DEB_DIR}/usr/bin/shareboxx-setup"
+
           # Frontend assets (compiled by cargo-leptos into target/site)
           cp -r target/site/* "${DEB_DIR}/var/lib/shareboxx/site/"
 
@@ -146,6 +150,10 @@ jobs:
           chown -R shareboxx:shareboxx /var/lib/shareboxx
           chmod 755 /var/lib/shareboxx/files
           systemctl daemon-reload
+          echo ""
+          echo "ShareBoxx installed. To set up WiFi access point & captive portal, run:"
+          echo "  sudo shareboxx-setup"
+          echo ""
           POSTINST
           chmod 755 "${DEB_DIR}/DEBIAN/postinst"
 
