@@ -1,5 +1,5 @@
 use fmtsize::{Conventional, FmtSize};
-use leptos::{html::Input, *};
+use leptos::{html::{Input, Div}, *};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::config::LeptosOptions;
@@ -9,10 +9,77 @@ use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
 use ammonia::clean;
 
+fn encode_uri_component(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut result = String::with_capacity(s.len() * 3);
+    for &byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push('%');
+                result.push(HEX[(byte >> 4) as usize] as char);
+                result.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(not(feature = "ssr"))]
+mod random_name {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = Math)]
+        fn random() -> f64;
+    }
+
+    const ADJECTIVES: &[&str] = &[
+        "Happy", "Sleepy", "Clever", "Swift", "Gentle", "Brave", "Calm",
+        "Bright", "Bold", "Fuzzy", "Jolly", "Lucky", "Mighty", "Noble",
+        "Perky", "Quiet", "Silly", "Witty", "Zany", "Cozy",
+        "Fluffy", "Sneaky", "Wobbly", "Sassy", "Dapper", "Grumpy", "Zippy",
+        "Peppy", "Cheeky", "Mellow", "Frisky", "Giddy", "Lively", "Nimble",
+        "Plucky", "Rowdy", "Sparkly", "Wacky", "Bouncy", "Cuddly",
+    ];
+
+    const ANIMALS: &[&str] = &[
+        "Panda", "Fox", "Owl", "Cat", "Dog", "Bear", "Wolf",
+        "Hawk", "Deer", "Otter", "Bunny", "Tiger", "Eagle", "Dolphin",
+        "Koala", "Lynx", "Moose", "Parrot", "Raccoon", "Sloth",
+        "Badger", "Beaver", "Bison", "Camel", "Cobra", "Crane", "Crow",
+        "Ferret", "Gecko", "Goose", "Hippo", "Hyena", "Ibis", "Iguana",
+        "Jackal", "Jaguar", "Lemur", "Llama", "Lobster", "Macaw",
+        "Mantis", "Meerkat", "Monkey", "Newt", "Ocelot", "Octopus",
+        "Osprey", "Panther", "Pelican", "Penguin", "Pigeon", "Puma",
+        "Quail", "Raven", "Salmon", "Seal", "Shark", "Snail",
+        "Sparrow", "Squid", "Stork", "Swan", "Tapir", "Toucan",
+        "Turkey", "Turtle", "Viper", "Vulture", "Walrus", "Weasel",
+        "Whale", "Wombat", "Yak", "Zebra", "Alpaca", "Axolotl",
+        "Chinchilla", "Coyote", "Donkey", "Falcon", "Flamingo", "Gibbon",
+        "Gopher", "Hedgehog", "Heron", "Hornet", "Kiwi", "Leopard",
+        "Manatee", "Narwhal", "Opossum", "Oriole", "Peacock", "Porcupine",
+        "Rooster", "Seahorse", "Starling", "Stingray", "Warthog", "Woodpecker",
+    ];
+
+    pub fn generate() -> String {
+        let adj_idx = (random() * ADJECTIVES.len() as f64) as usize;
+        let animal_idx = (random() * ANIMALS.len() as f64) as usize;
+        format!(
+            "{} {}",
+            ADJECTIVES[adj_idx.min(ADJECTIVES.len() - 1)],
+            ANIMALS[animal_idx.min(ANIMALS.len() - 1)]
+        )
+    }
+}
+
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
         <!DOCTYPE html>
-        <html data-bs-theme="dark">
+        <html lang="en">
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -33,7 +100,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="leptos" href="/pkg/shareboxx.css"/>
-        <Title text="Welcome to ShareBoxx"/>
+        <Title text="ShareBoxx"/>
         <Router>
             <main>
                 <Routes fallback=HomePage>
@@ -45,64 +112,122 @@ pub fn App() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum ActiveTab {
+    Files,
+    Chat,
+}
+
 /// Renders the home page of your application.
 #[component]
 fn HomePage() -> impl IntoView {
     let (path, set_path) = signal("".to_string());
-    view! {
-        <div class="container-fluid">
-            <div class="row">
+    let (active_tab, set_active_tab) = signal(ActiveTab::Files);
+    let (user_count, set_user_count) = signal(0u32);
+    let (chat_version, set_chat_version) = signal(0u32);
+    let (has_unread, set_has_unread) = signal(false);
 
-                <div class="col text-left">
-                    <div class="container-fluid">
-                        <div class="row">
-                            <div class="col text-left">
-                                <div class="card">
-                                    <h2 class="card-header">Welcome to Shareboxx</h2>
-                                    <div class="card-body">
-                                        <p class="card-text">Shareboxx is a free offline fire sharing service. You can upload files and share them with others. <br/>
-                                        This is an local, anonymous service with no internet connection and no accounts. Note that executables are not checked for malware, so be careful what you download.</p>
-                                    </div>
-                                </div>
-                            </div>
+    // SSE connection for live chat updates and user count
+    #[cfg(not(feature = "ssr"))]
+    {
+        use futures::StreamExt;
+        spawn_local(async move {
+            let mut source = gloo_net::eventsource::futures::EventSource::new("/ws")
+                .expect("couldn't connect to SSE stream");
+
+            let mut chat_stream = source.subscribe("chat").unwrap();
+            let mut users_stream = source.subscribe("users").unwrap();
+
+            // Handle chat updates in a separate task
+            spawn_local(async move {
+                while let Some(_) = chat_stream.next().await {
+                    set_chat_version.update(|v| *v += 1);
+                    if active_tab.get_untracked() != ActiveTab::Chat {
+                        set_has_unread.set(true);
+                    }
+                }
+            });
+
+            // Handle user count updates (keeps EventSource alive)
+            while let Some(Ok((_event_type, msg))) = users_stream.next().await {
+                if let Some(data_str) = msg.data().as_string() {
+                    if let Ok(count) = data_str.parse::<u32>() {
+                        set_user_count.set(count);
+                    }
+                }
+            }
+        });
+    }
+
+    view! {
+        <div class="app">
+            <header class="app-header">
+                <h1 class="logo">"ShareBoxx"</h1>
+                <div class="status-badge">
+                    <span class="online-dot"></span>
+                    {move || user_count.get()}
+                    " online"
+                </div>
+            </header>
+
+            <nav class="tab-bar">
+                <button
+                    class="tab-btn"
+                    class:active=move || active_tab.get() == ActiveTab::Files
+                    on:click=move |_| set_active_tab.set(ActiveTab::Files)
+                >
+                    "Files"
+                </button>
+                <button
+                    class="tab-btn"
+                    class:active=move || active_tab.get() == ActiveTab::Chat
+                    on:click=move |_| {
+                        set_active_tab.set(ActiveTab::Chat);
+                        set_has_unread.set(false);
+                    }
+                >
+                    "Chat"
+                    <Show when=move || has_unread.get() fallback=|| ()>
+                        <span class="unread-dot"></span>
+                    </Show>
+                </button>
+            </nav>
+
+            <div class="app-content">
+                <div class="panel panel-files" class:active=move || active_tab.get() == ActiveTab::Files>
+                    <div class="card welcome-card">
+                        <div class="card-body">
+                            <h2>"Welcome to ShareBoxx"</h2>
+                            <p>"A free offline file sharing service. Upload files and share them with anyone on this network."</p>
+                            <p class="text-muted">"This is a local, anonymous service with no internet connection and no accounts. Note that executables are not checked for malware, so be careful what you download."</p>
                         </div>
-                        <div class="row">
-                            <div class="col text-left">
-                                <p/>
-                                <FileUploadComponent path=path/>
-                            </div>
+                    </div>
+
+                    <FileUploadComponent path=path/>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>"Download Files"</h2>
+                        </div>
+                        <div class="card-body">
+                            <FileListComponent path=path set_path=set_path/>
                         </div>
                     </div>
                 </div>
-                <div class="col text-left">
-                    <ChatComponent/>
+
+                <div class="panel panel-chat" class:active=move || active_tab.get() == ActiveTab::Chat>
+                    <ChatComponent chat_version=chat_version/>
                 </div>
             </div>
         </div>
-        <p/>
-        <div class="card">
-            <h2 class="card-header">Download Files</h2>
-            <div class="card-body">
-                <FileListComponent path=path set_path=set_path/>
-            </div>
-        </div>
-        <br/>
     }.into_any()
 }
 
 /// 404 - Not Found
 #[component]
 fn NotFound() -> impl IntoView {
-    // set an HTTP status code 404
-    // this is feature gated because it can only be done during
-    // initial server-side rendering
-    // if you navigate to the 404 page subsequently, the status
-    // code will not be set because there is not a new HTTP request
-    // to the server
     #[cfg(feature = "ssr")]
     {
-        // this can be done inline because it's synchronous
-        // if it were async, we'd use a server function
         let resp = expect_context::<leptos_actix::ResponseOptions>();
         resp.set_status(actix_web::http::StatusCode::NOT_FOUND);
     }
@@ -145,7 +270,7 @@ pub async fn get_file_list(
             }
         })
         .collect();
-    
+
     // Sort file_entries by name, with directories first, then files.
     let mut file_entries = file_entries;
     file_entries.sort_by(|a, b| {
@@ -173,18 +298,19 @@ pub fn FileUploadComponent(
     path: ReadSignal<String>,
 ) -> impl IntoView {
     view! {
-        <div class="card">
-            <h2 class="card-header">Upload Files</h2>
+        <div class="card upload-card">
+            <div class="card-header">
+                <h2>"Upload Files"</h2>
+            </div>
             <div class="card-body">
                 <form action="/upload" method="post" enctype="multipart/form-data">
                     <input type="hidden" name="upload_path" value={path.clone()}/>
                     <input type="file" multiple name="file"/>
-                    <button type="submit">Submit</button>
-                </form>            
+                    <button class="btn-primary" type="submit">"Upload"</button>
+                </form>
             </div>
         </div>
     }
-
 }
 
 #[component]
@@ -197,10 +323,14 @@ pub fn FileListComponent(
 
     view! {
         <div>
-            "Current Directory: " {path}
-            <p/>
+            <div class="current-dir">
+                {move || {
+                    let p = path.get();
+                    if p.is_empty() { "/".to_string() } else { format!("/{}", p) }
+                }}
+            </div>
 
-            <Suspense fallback=|| view! { <p>"Loading..."</p> }>
+            <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
                 <Show
                     when=move || directory_listing.get()
                         .map(|res| res.is_ok())
@@ -211,7 +341,7 @@ pub fn FileListComponent(
                             .map(|e| view! { <p>"ERROR: " {e.to_string()}</p> })
                     }
                 >
-                    <div class="list-group">
+                    <div class="file-list">
                         <For
                             each=move || directory_listing.get()
                                 .and_then(|r| r.ok())
@@ -220,14 +350,23 @@ pub fn FileListComponent(
                             children=move |n| {
                                 let (file_type, file_name, file_size) = n;
                                 let link_target = if file_type == "f" {
-                                    format!("/files/{}/{}", path.get_untracked(), &file_name)
+                                    let p = path.get_untracked();
+                                    let mut encoded = String::from("/files/");
+                                    for seg in p.split('/') {
+                                        if !seg.is_empty() {
+                                            encoded.push_str(&encode_uri_component(seg));
+                                            encoded.push('/');
+                                        }
+                                    }
+                                    encoded.push_str(&encode_uri_component(&file_name));
+                                    encoded
                                 } else { "#".to_string() };
 
                                 view! {
                                     <a
                                         href=link_target
                                         rel="external"
-                                        class="list-group-item list-group-item-action"
+                                        class="file-item"
                                         on:click=move |ev| {
                                             if file_name == ".." {
                                                 ev.prevent_default();
@@ -245,9 +384,14 @@ pub fn FileListComponent(
                                             }
                                         }
                                     >
-                                        <img src={if file_type == "d" { "/assets/folder.png" } else { "/assets/file.png" }} style="width: 48px; height: 48px; margin-right: 10px"/>
-                                        {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
-                                        <span class="float-end">
+                                        <img
+                                            src={if file_type == "d" { "/assets/folder.png" } else { "/assets/file.png" }}
+                                            class="file-icon"
+                                        />
+                                        <span class="file-name">
+                                            {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
+                                        </span>
+                                        <span class="file-size">
                                             {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
                                         </span>
                                     </a>
@@ -275,16 +419,14 @@ pub async fn get_chat_messages() -> Result<Vec<(String, String, u64)>, ServerFnE
     let chat_file = std::fs::read_to_string(chat_file_path.clone())
         .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
 
-    let mut chat_messages : Vec<(String, String, u64)> = Vec::new();
-    // If chat file is not empty, parse it
-    let mut chat_messages : Vec<(String, String, u64)> = if !chat_file.is_empty() {
+    let chat_messages : Vec<(String, String, u64)> = if !chat_file.is_empty() {
         serde_json::from_str(&chat_file).unwrap_or_default()
     } else {
         Vec::new()
     };
-    
-    // Only return the last 5 chat messages
-    let chat_messages = chat_messages.iter().rev().take(5).cloned().rev().collect();
+
+    // Only return the last 50 chat messages
+    let chat_messages = chat_messages.iter().rev().take(50).cloned().rev().collect();
 
     Ok(chat_messages)
 }
@@ -294,13 +436,11 @@ pub async fn send_chat_message(
     chat_name: String,
     chat_message: String,
 ) -> Result<(), ServerFnError> {
-    // This gives us access to COUNT_CHANNEL for sending SSE updates
     use crate::app::ssr_imports::*;
 
     logging::log!("Chat message received: {:?}", chat_message);
-    // Filter the chat message for XSS
     let mut chat_name_clone = chat_name.clone();
-    
+
     if chat_name_clone.clone().is_empty() {
         chat_name_clone = "Anonymous".to_string();
     }
@@ -337,25 +477,27 @@ pub async fn send_chat_message(
             .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
         serde_json::to_writer(chat_file, &chat_messages)
             .map_err(|e| format!("Error writing chat file: {:?}", e)).unwrap();
-        
+
         // Send signal to trigger SSE update
-        _ = COUNT_CHANNEL.send(1);
+        _ = CHAT_CHANNEL.send(1);
     }
     println!("Chat messages: {:?}", chat_messages);
     Ok(())
 }
 
 #[component]
-pub fn ChatComponent() -> impl IntoView {
+pub fn ChatComponent(
+    chat_version: ReadSignal<u32>,
+) -> impl IntoView {
     let chat_input_ref: NodeRef<Input> = NodeRef::new();
     let name_ref: NodeRef<Input> = NodeRef::new();
+    let messages_ref: NodeRef<Div> = NodeRef::new();
     let send_chat_message = ServerAction::<SendChatMessage>::new();
-    let (sse_version, set_sse_version) = signal(0u32);
     let (saved_name, set_saved_name) = signal(String::new());
 
-    // Resource refetches when action completes (version increments) or SSE update arrives
+    // Resource refetches when action completes or SSE chat update arrives
     let chat_messages_resource = Resource::new(
-        move || (sse_version.get(), send_chat_message.version().get()),
+        move || (chat_version.get(), send_chat_message.version().get()),
         |_| get_chat_messages()
     );
 
@@ -374,30 +516,50 @@ pub fn ChatComponent() -> impl IntoView {
         v
     });
 
-    // When an event arrives from another user, increment SSE version to trigger refetch
+    // Auto-scroll chat to bottom when messages load or update
+    Effect::new(move |_: Option<()>| {
+        if let Some(Ok(_)) = chat_messages_resource.get() {
+            #[cfg(not(feature = "ssr"))]
+            {
+                let div_ref = messages_ref;
+                spawn_local(async move {
+                    if let Some(div) = div_ref.get() {
+                        div.set_scroll_top(div.scroll_height());
+                    }
+                });
+            }
+        }
+    });
+
+    // Assign a random name on first load (client only)
     #[cfg(not(feature = "ssr"))]
     {
-        use futures::StreamExt;
-        spawn_local(async move {
-            let mut source = gloo_net::eventsource::futures::EventSource::new("/ws")
-                .expect("couldn’t connect to SSE stream");
-            let mut stream = source.subscribe("message").unwrap();
-            while let Some(_) = stream.next().await {
-                set_sse_version.update(|v| *v += 1);
+        Effect::new(move |prev: Option<bool>| {
+            if prev.unwrap_or(false) {
+                return true;
             }
+            if let Some(input) = name_ref.get() {
+                let name = random_name::generate();
+                input.set_value(&name);
+                set_saved_name.set(name);
+                return true;
+            }
+            false
         });
     }
 
     view! {
-        <div class="card">
-            <h2 class="card-header">Chat</h2>
-            <div class="card-body overflow-y-scroll" style="height: 300px;">
-                <Suspense fallback=|| view! { <p>"Loading..."</p> }>
+        <div class="card chat-card">
+            <div class="card-header">
+                <h2>"Chat"</h2>
+            </div>
+            <div class="chat-messages" node_ref=messages_ref>
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
                     <Show
                         when=move || chat_messages_resource.get()
                             .map(|res| res.is_ok())
                             .unwrap_or(false)
-                        fallback=|| view! { <p>"No messages yet."</p> }
+                        fallback=|| view! { <p class="chat-empty">"No messages yet. Start the conversation!"</p> }
                     >
                         <For
                             each=move || chat_messages_resource
@@ -406,16 +568,21 @@ pub fn ChatComponent() -> impl IntoView {
                                 .unwrap_or_default()
                             key=|msg| msg.2
                             children=move |(user, message, _)| {
-                                view! { <p><strong>{user}</strong>": " {message}</p> }
+                                view! {
+                                    <div class="chat-message">
+                                        <span class="chat-author">{user}</span>
+                                        <span class="chat-text">{message}</span>
+                                    </div>
+                                }
                             }
                         />
                     </Show>
                 </Suspense>
             </div>
-            <div>
+            <div class="chat-input-form">
                 <ActionForm action=send_chat_message>
-                    <div class="input-group">
-                        <input type="text" class="form-control" placeholder="Name" name="chat_name"
+                    <div class="chat-input-group">
+                        <input type="text" class="name-input" placeholder="Name" name="chat_name"
                             node_ref=name_ref
                             on:input=move |_| {
                                 if let Some(input) = name_ref.get() {
@@ -425,12 +592,11 @@ pub fn ChatComponent() -> impl IntoView {
                         />
                         <input
                             type="text"
-                            class="form-control"
-                            placeholder="Type a chat message"
+                            placeholder="Type a message..."
                             name="chat_message"
                             node_ref=chat_input_ref
                         />
-                        <button class="btn btn-outline-secondary" type="submit">Send</button>
+                        <button class="btn-send" type="submit">"Send"</button>
                     </div>
                 </ActionForm>
             </div>
@@ -443,10 +609,14 @@ pub mod ssr_imports {
     pub use once_cell::sync::OnceCell;
     pub use std::sync::atomic::{AtomicI32, Ordering};
 
-    pub static COUNT: AtomicI32 = AtomicI32::new(0);
+    pub static CONNECTED_USERS: AtomicI32 = AtomicI32::new(0);
 
     lazy_static::lazy_static! {
-        pub static ref COUNT_CHANNEL: tokio::sync::broadcast::Sender<i32> = {
+        pub static ref CHAT_CHANNEL: tokio::sync::broadcast::Sender<i32> = {
+            let (tx, _rx) = tokio::sync::broadcast::channel(16);
+            tx
+        };
+        pub static ref USERS_CHANNEL: tokio::sync::broadcast::Sender<i32> = {
             let (tx, _rx) = tokio::sync::broadcast::channel(16);
             tx
         };
@@ -459,25 +629,4 @@ pub mod ssr_imports {
             simple_logger::SimpleLogger::new().env().init().unwrap();
         });
     }
-}
-
-#[server]
-pub async fn get_message_count() -> Result<i32, ServerFnError> {
-    use ssr_imports::*;
-
-    Ok(COUNT.load(Ordering::Relaxed))
-}
-
-#[server]
-pub async fn adjust_message_count(
-    delta: i32,
-    msg: String,
-) -> Result<i32, ServerFnError> {
-    use ssr_imports::*;
-
-    let new = COUNT.load(Ordering::Relaxed) + delta;
-    COUNT.store(new, Ordering::Relaxed);
-    _ = COUNT_CHANNEL.send(new);
-    println!("message = {:?}", msg);
-    Ok(new)
 }

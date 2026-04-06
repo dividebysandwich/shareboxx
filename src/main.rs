@@ -3,7 +3,7 @@ use actix_files::Files;
 #[cfg(feature = "ssr")]
 use actix_multipart::form::{tempfile::TempFileConfig, MultipartFormConfig};
 #[cfg(feature = "ssr")]
-use actix_web::{Error, web, get,  App, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{web, get, App, HttpResponse, HttpServer};
 #[cfg(feature = "ssr")]
 use actix_web::middleware::{Next, from_fn};
 #[cfg(feature = "ssr")]
@@ -11,7 +11,6 @@ use actix_web::dev::{ServiceRequest, ServiceResponse};
 #[cfg(feature = "ssr")]
 use actix_web::body::MessageBody;
 #[cfg(feature = "ssr")]
-use actix_multipart::MultipartError;
 #[cfg(feature = "ssr")]
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
@@ -153,22 +152,62 @@ async fn domain_redirect(
 #[cfg(feature = "ssr")]
 #[get("/ws")]
 async fn counter_events() -> impl actix_web::Responder {
-    use actix_web::web;
+    use actix_web::web::Bytes;
     use futures::StreamExt;
     use shareboxx::app::ssr_imports::*;
-    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::wrappers::ReceiverStream;
 
-    let stream = futures::stream::once(async {
-        shareboxx::app::get_message_count().await.unwrap_or(0)
-    })
-    .chain(BroadcastStream::new(COUNT_CHANNEL.subscribe()).filter_map(|r| async { r.ok() }))
-    .map(|value| {
-        Ok(web::Bytes::from(format!(
-            "event: message\ndata: {value}\n\n"
-        ))) as Result<web::Bytes, actix_web::Error>
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(32);
+
+    // Increment connected users and broadcast new count
+    let new_count = CONNECTED_USERS.fetch_add(1, Ordering::Relaxed) + 1;
+    _ = USERS_CHANNEL.send(new_count);
+
+    tokio::spawn(async move {
+        // Send initial user count to this client
+        let _ = tx.send(Bytes::from(format!(
+            "event: users\ndata: {new_count}\n\n"
+        ))).await;
+
+        let mut chat_rx = CHAT_CHANNEL.subscribe();
+        let mut users_rx = USERS_CHANNEL.subscribe();
+
+        loop {
+            tokio::select! {
+                result = chat_rx.recv() => {
+                    match result {
+                        Ok(_) => {
+                            if tx.send(Bytes::from("event: chat\ndata: update\n\n")).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
+                result = users_rx.recv() => {
+                    match result {
+                        Ok(count) => {
+                            if tx.send(Bytes::from(format!("event: users\ndata: {count}\n\n"))).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+
+        // Client disconnected - decrement and broadcast
+        let new_count = (CONNECTED_USERS.fetch_sub(1, Ordering::Relaxed) - 1).max(0);
+        _ = USERS_CHANNEL.send(new_count);
     });
+
+    let stream = ReceiverStream::new(rx).map(Ok::<_, actix_web::Error>);
     actix_web::HttpResponse::Ok()
         .insert_header(("Content-Type", "text/event-stream"))
+        .insert_header(("Cache-Control", "no-cache"))
         .streaming(stream)
 }
 
