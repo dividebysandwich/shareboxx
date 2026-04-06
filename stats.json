@@ -1,0 +1,16 @@
+{
+  "total_connections": 12,
+  "total_uploads": 0,
+  "total_upload_bytes": 0,
+  "total_downloads": 12,
+  "total_download_bytes": 293286446,
+  "total_chat_messages": 3,
+  "file_downloads": {
+    "drmarkdown-1.gif": 4,
+    "Movies/2025-12-11 17-57-34.mkv": 1,
+    "drmarkdown.gif": 3,
+    "Music/LockChime.wav": 1,
+    "debatable.jpg": 3
+  },
+  "started_at": 1775476225
+}

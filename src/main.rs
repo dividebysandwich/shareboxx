@@ -11,7 +11,6 @@ use actix_web::dev::{ServiceRequest, ServiceResponse};
 #[cfg(feature = "ssr")]
 use actix_web::body::MessageBody;
 #[cfg(feature = "ssr")]
-#[cfg(feature = "ssr")]
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
 use leptos_actix::{generate_route_list, LeptosRoutes};
@@ -29,6 +28,13 @@ async fn main() -> std::io::Result<()> {
 
     let routes = generate_route_list(App);
     println!("listening on http://{}", &addr);
+
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            shareboxx::app::ssr_imports::save_stats();
+        }
+    });
 
     HttpServer::new(move || {
         let site_root = &leptos_options.site_root;
@@ -49,7 +55,7 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/pkg", format!("{site_root}/pkg")))
             // serve other assets from the `assets` directory
             .service(Files::new("/assets", site_root.as_ref()))
-            .service(Files::new("/files", "./files"))
+            .service(serve_file)
             // serve the favicon from /favicon.ico
             .service(favicon)
             // uploader
@@ -92,6 +98,38 @@ async fn favicon(
 }
 
 #[cfg(feature = "ssr")]
+#[get("/files/{path:.*}")]
+async fn serve_file(
+    path: web::Path<String>,
+) -> actix_web::Result<actix_files::NamedFile> {
+    use shareboxx::app::ssr_imports::*;
+
+    let base = std::path::PathBuf::from("./files");
+    let file_path = base.join(path.as_ref());
+
+    // Path traversal protection via canonicalize
+    let canonical = file_path.canonicalize()
+        .map_err(|_| actix_web::error::ErrorNotFound("File not found"))?;
+    let canonical_base = base.canonicalize()
+        .map_err(|_| actix_web::error::ErrorInternalServerError("Server error"))?;
+
+    if !canonical.starts_with(&canonical_base) || canonical.is_dir() {
+        return Err(actix_web::error::ErrorNotFound("File not found"));
+    }
+
+    // Track download in stats
+    if let Ok(mut stats) = STATS.write() {
+        stats.total_downloads += 1;
+        if let Ok(meta) = std::fs::metadata(&canonical) {
+            stats.total_download_bytes += meta.len();
+        }
+        *stats.file_downloads.entry(path.to_string()).or_insert(0) += 1;
+    }
+
+    Ok(actix_files::NamedFile::open(canonical)?)
+}
+
+#[cfg(feature = "ssr")]
 #[derive(Debug, actix_multipart::form::MultipartForm)]
 struct UploadForm {
     #[multipart(rename = "file")]
@@ -103,9 +141,17 @@ struct UploadForm {
 async fn save_files(
     actix_multipart::form::MultipartForm(form): actix_multipart::form::MultipartForm<UploadForm>,
 ) -> Result<impl actix_web::Responder, actix_web::Error> {
+    use shareboxx::app::ssr_imports::*;
+
+    let mut total_size: u64 = 0;
+
     for f in form.files {
-        let path = format!("./files/{}{}", form.upload_path.clone(), f.file_name.unwrap());
-        
+        let file_name = f.file_name.unwrap_or_default();
+        if file_name.is_empty() {
+            continue;
+        }
+        let path = format!("./files/{}{}", form.upload_path.clone(), file_name);
+
         // This logic can be simplified/made more robust, but keeping it for now
         let mut new_path = path.clone();
         if let (Some(parent), Some(stem), Some(ext)) = (
@@ -118,13 +164,25 @@ async fn save_files(
                 new_path = parent
                     .join(format!("{}-{}.{}", stem, i, ext))
                     .to_str()
-                    .unwrap()
+                    .ok_or_else(|| actix_web::error::ErrorInternalServerError("Invalid path"))?
                     .to_string();
                 i += 1;
             }
         }
 
-        f.file.persist(new_path).unwrap();
+        let persisted = f.file.persist(&new_path)
+            .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to persist file: {}", e)))?;
+
+        if let Ok(meta) = persisted.metadata() {
+            total_size += meta.len();
+        }
+    }
+
+    if total_size > 0 {
+        if let Ok(mut stats) = STATS.write() {
+            stats.total_uploads += 1;
+            stats.total_upload_bytes += total_size;
+        }
     }
 
     Ok(actix_web::HttpResponse::Ok().body("ok"))
@@ -162,6 +220,10 @@ async fn counter_events() -> impl actix_web::Responder {
     // Increment connected users and broadcast new count
     let new_count = CONNECTED_USERS.fetch_add(1, Ordering::Relaxed) + 1;
     _ = USERS_CHANNEL.send(new_count);
+
+    if let Ok(mut stats) = STATS.write() {
+        stats.total_connections += 1;
+    }
 
     tokio::spawn(async move {
         // Send initial user count to this client

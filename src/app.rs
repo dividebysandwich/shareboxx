@@ -9,6 +9,13 @@ use leptos_router::components::{Router, Route, Routes};
 #[cfg(feature = "ssr")]
 use ammonia::clean;
 
+/// Helper to create a ServerFnError with the default NoCustomError type parameter.
+#[cfg(feature = "ssr")]
+fn sfn_err(msg: impl Into<String>) -> ServerFnError {
+    let s: String = msg.into();
+    ServerFnError::ServerError(s)
+}
+
 fn encode_uri_component(s: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut result = String::with_capacity(s.len() * 3);
@@ -25,6 +32,100 @@ fn encode_uri_component(s: &str) -> String {
         }
     }
     result
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn format_uptime(seconds: u64) -> String {
+    let d = seconds / 86400;
+    let h = (seconds % 86400) / 3600;
+    let m = (seconds % 3600) / 60;
+    if d > 0 {
+        format!("{}d {}h {}m", d, h, m)
+    } else if h > 0 {
+        format!("{}h {}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
+}
+
+fn is_image_file(name: &str) -> bool {
+    let l = name.to_lowercase();
+    l.ends_with(".jpg")
+        || l.ends_with(".jpeg")
+        || l.ends_with(".png")
+        || l.ends_with(".gif")
+        || l.ends_with(".webp")
+        || l.ends_with(".svg")
+        || l.ends_with(".bmp")
+}
+
+#[cfg(not(feature = "ssr"))]
+mod notification {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        type AudioContext;
+        #[wasm_bindgen(catch, constructor)]
+        fn new() -> Result<AudioContext, JsValue>;
+        #[wasm_bindgen(method, js_name = "createOscillator")]
+        fn create_oscillator(this: &AudioContext) -> OscillatorNode;
+        #[wasm_bindgen(method, js_name = "createGain")]
+        fn create_gain(this: &AudioContext) -> GainNode;
+        #[wasm_bindgen(method, getter)]
+        fn destination(this: &AudioContext) -> JsValue;
+        #[wasm_bindgen(method, getter, js_name = "currentTime")]
+        fn current_time(this: &AudioContext) -> f64;
+
+        type OscillatorNode;
+        #[wasm_bindgen(method)]
+        fn connect(this: &OscillatorNode, dest: &JsValue) -> JsValue;
+        #[wasm_bindgen(method)]
+        fn start(this: &OscillatorNode);
+        #[wasm_bindgen(method)]
+        fn stop(this: &OscillatorNode, when: f64);
+        #[wasm_bindgen(method, getter)]
+        fn frequency(this: &OscillatorNode) -> AudioParam;
+        #[wasm_bindgen(method, setter, js_name = "type")]
+        fn set_type(this: &OscillatorNode, value: &str);
+
+        type GainNode;
+        #[wasm_bindgen(method)]
+        fn connect(this: &GainNode, dest: &JsValue) -> JsValue;
+        #[wasm_bindgen(method, getter)]
+        fn gain(this: &GainNode) -> AudioParam;
+
+        type AudioParam;
+        #[wasm_bindgen(method, setter)]
+        fn set_value(this: &AudioParam, val: f32);
+    }
+
+    pub fn play() {
+        let Some(ctx) = AudioContext::new().ok() else {
+            return;
+        };
+        let osc = ctx.create_oscillator();
+        let gain_node = ctx.create_gain();
+        osc.set_type("sine");
+        osc.frequency().set_value(880.0);
+        gain_node.gain().set_value(0.3);
+        osc.connect(&gain_node);
+        gain_node.connect(&ctx.destination());
+        let t = ctx.current_time();
+        osc.start();
+        osc.stop(t + 0.12);
+    }
 }
 
 #[cfg(not(feature = "ssr"))]
@@ -76,6 +177,55 @@ mod random_name {
     }
 }
 
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct StatsData {
+    pub total_connections: u64,
+    pub total_uploads: u64,
+    pub total_upload_bytes: u64,
+    pub total_downloads: u64,
+    pub total_download_bytes: u64,
+    pub total_chat_messages: u64,
+    pub top_downloads: Vec<(String, u64)>,
+    pub uptime_seconds: u64,
+}
+
+#[cfg(feature = "ssr")]
+fn resolve_safe_path(
+    base: &std::path::Path,
+    user_path: &str,
+) -> Result<std::path::PathBuf, ServerFnError> {
+    let target = base.join(user_path);
+    let canonical = if target.exists() {
+        target.canonicalize()
+    } else if let Some(parent) = target.parent() {
+        if parent.exists() {
+            parent
+                .canonicalize()
+                .map(|p| p.join(target.file_name().unwrap_or_default()))
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Parent not found",
+            ))
+        }
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Invalid path",
+        ))
+    }
+    .map_err(|e| sfn_err(format!("Path error: {}", e)))?;
+
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| sfn_err(format!("Base path error: {}", e)))?;
+
+    if !canonical.starts_with(&canonical_base) {
+        return Err(sfn_err("Access denied".to_string()));
+    }
+    Ok(canonical)
+}
+
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
         <!DOCTYPE html>
@@ -105,6 +255,7 @@ pub fn App() -> impl IntoView {
             <main>
                 <Routes fallback=HomePage>
                     <Route path=path!("") view=HomePage/>
+                    <Route path=path!("stats") view=StatsPage/>
                     <Route path=path!("/*any") view=NotFound/>
                 </Routes>
             </main>
@@ -145,6 +296,7 @@ fn HomePage() -> impl IntoView {
                     set_chat_version.update(|v| *v += 1);
                     if active_tab.get_untracked() != ActiveTab::Chat {
                         set_has_unread.set(true);
+                        notification::play();
                     }
                 }
             });
@@ -164,10 +316,13 @@ fn HomePage() -> impl IntoView {
         <div class="app">
             <header class="app-header">
                 <h1 class="logo">"ShareBoxx"</h1>
-                <div class="status-badge">
-                    <span class="online-dot"></span>
-                    {move || user_count.get()}
-                    " online"
+                <div class="header-right">
+                    <div class="status-badge">
+                        <span class="online-dot"></span>
+                        {move || user_count.get()}
+                        " online"
+                    </div>
+                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
                 </div>
             </header>
 
@@ -204,14 +359,14 @@ fn HomePage() -> impl IntoView {
                         </div>
                     </div>
 
-                    <FileUploadComponent path=path set_file_list_version=set_file_list_version/>
+                    <FileUploadComponent path=path set_file_list_version=set_file_list_version file_list_version=file_list_version/>
 
                     <div class="card">
                         <div class="card-header">
                             <h2>"Download Files"</h2>
                         </div>
                         <div class="card-body">
-                            <FileListComponent path=path set_path=set_path file_list_version=file_list_version/>
+                            <FileListComponent path=path set_path=set_path file_list_version=file_list_version set_file_list_version=set_file_list_version/>
                         </div>
                     </div>
                 </div>
@@ -239,36 +394,29 @@ fn NotFound() -> impl IntoView {
 }
 
 #[server(GetFileList)]
-pub async fn get_file_list(
-    path : String
-) -> Result<Vec<(String, String, u64)>, ServerFnError> {
+pub async fn get_file_list(path: String) -> Result<Vec<(String, String, u64)>, ServerFnError> {
     let base_path = std::env::current_dir()
-    .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
-    //Check if path contains "..", if so, return an error
-    if path.contains("..") {
-        return Err(ServerFnError::ServerError("Path contains '..'".to_string()));
-    }
-    let path_to_read = base_path.join("files").join(path.clone());
-    logging::log!("Listing directory: {:?}", path_to_read.clone());
-    let files = std::fs::read_dir(path_to_read)
-        .map_err(|e| format!("Error reading directory: {:?}", e)).unwrap();
-    let file_entries : Vec<(String, String, u64)> = files
-        .filter_map(|entry| {
-            match entry {
-                Ok(entry) => {
-                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        Some(("d".to_string(), entry.file_name().into_string().unwrap(), 0))
-                    } else {
-                        //get the file size in bytes
-                        let metadata = entry.metadata().unwrap();
-                        let size = metadata.len();
-                        Some(("f".to_string(), entry.file_name().into_string().unwrap(), size))
-                    }
-                },
-                Err(e) => {
-                    Some(("f".to_string(), format!("Error reading file entry: {:?}", e).to_string().into(), 0))
-                },
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
+    let base = base_path.join("files");
+
+    let safe_path = resolve_safe_path(&base, &path)?;
+    logging::log!("Listing directory: {:?}", safe_path);
+
+    let files = std::fs::read_dir(&safe_path)
+        .map_err(|e| sfn_err(format!("Error reading directory: {:?}", e)))?;
+
+    let file_entries: Vec<(String, String, u64)> = files
+        .filter_map(|entry| match entry {
+            Ok(entry) => {
+                let name = entry.file_name().into_string().ok()?;
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    Some(("d".to_string(), name, 0))
+                } else {
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    Some(("f".to_string(), name, size))
+                }
             }
+            Err(_) => None,
         })
         .collect();
 
@@ -283,6 +431,7 @@ pub async fn get_file_list(
             a.1.to_lowercase().cmp(&b.1.to_lowercase())
         }
     });
+
     // If path is not empty, prepend ".." to the list of files
     if !path.is_empty() {
         let mut new_files = Vec::new();
@@ -294,15 +443,91 @@ pub async fn get_file_list(
     Ok(file_entries)
 }
 
+#[server]
+pub async fn get_disk_space() -> Result<(u64, u64), ServerFnError> {
+    let output = std::process::Command::new("df")
+        .args(["--output=size,avail", "-B1", "./files"])
+        .output()
+        .map_err(|e| sfn_err(format!("df failed: {}", e)))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .nth(1)
+        .ok_or_else(|| sfn_err("Failed to parse df".to_string()))?;
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err(sfn_err(
+            "Invalid df output".to_string(),
+        ));
+    }
+    let total: u64 = parts[0].parse().unwrap_or(0);
+    let avail: u64 = parts[1].parse().unwrap_or(0);
+    Ok((total.saturating_sub(avail), total))
+}
+
+#[server]
+pub async fn create_directory(path: String, name: String) -> Result<(), ServerFnError> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "."
+    {
+        return Err(sfn_err(
+            "Invalid directory name".to_string(),
+        ));
+    }
+    let base = std::env::current_dir()
+        .map_err(|e| sfn_err(e.to_string()))?
+        .join("files");
+    let combined = format!("{}{}", path, name);
+    resolve_safe_path(&base, &combined)?;
+    let target = base.join(&path).join(&name);
+    std::fs::create_dir_all(&target)
+        .map_err(|e| sfn_err(format!("Failed: {}", e)))?;
+    Ok(())
+}
+
+#[server]
+pub async fn get_stats() -> Result<StatsData, ServerFnError> {
+    use ssr_imports::*;
+    let stats = STATS
+        .read()
+        .map_err(|e| sfn_err(e.to_string()))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut top: Vec<(String, u64)> = stats
+        .file_downloads
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1));
+    top.truncate(10);
+    Ok(StatsData {
+        total_connections: stats.total_connections,
+        total_uploads: stats.total_uploads,
+        total_upload_bytes: stats.total_upload_bytes,
+        total_downloads: stats.total_downloads,
+        total_download_bytes: stats.total_download_bytes,
+        total_chat_messages: stats.total_chat_messages,
+        top_downloads: top,
+        uptime_seconds: now.saturating_sub(stats.started_at),
+    })
+}
+
 #[component]
 pub fn FileUploadComponent(
     path: ReadSignal<String>,
     set_file_list_version: WriteSignal<u32>,
+    file_list_version: ReadSignal<u32>,
 ) -> impl IntoView {
     let file_input_ref: NodeRef<Input> = NodeRef::new();
     let (has_file, set_has_file) = signal(false);
     let (progress, set_progress) = signal(-1.0f64); // -1 = idle, 0..1 = uploading
     let (upload_status, set_upload_status) = signal(String::new());
+
+    let disk_space = Resource::new(
+        move || file_list_version.get(),
+        |_| get_disk_space(),
+    );
 
     let on_upload_click = move |_| {
         #[cfg(not(feature = "ssr"))]
@@ -369,6 +594,19 @@ pub fn FileUploadComponent(
         <div class="card upload-card">
             <div class="card-header">
                 <h2>"Upload Files"</h2>
+                <Suspense fallback=|| ()>
+                    {move || disk_space.get().and_then(|r| r.ok()).map(|(used, total)| {
+                        let pct = if total > 0 { (used as f64 / total as f64 * 100.0) as u32 } else { 0 };
+                        view! {
+                            <div class="disk-space">
+                                <div class="disk-space-bar">
+                                    <div class="disk-space-fill" style=format!("width: {}%", pct)></div>
+                                </div>
+                                <span class="disk-space-text">{format_bytes(used)} " / " {format_bytes(total)}</span>
+                            </div>
+                        }
+                    })}
+                </Suspense>
             </div>
             <div class="card-body">
                 <div class="upload-controls">
@@ -411,7 +649,10 @@ pub fn FileListComponent(
     path: ReadSignal<String>,
     set_path: WriteSignal<String>,
     file_list_version: ReadSignal<u32>,
+    set_file_list_version: WriteSignal<u32>,
 ) -> impl IntoView {
+    let folder_input_ref: NodeRef<Input> = NodeRef::new();
+    let (folder_name, set_folder_name) = signal(String::new());
 
     let directory_listing = Resource::new(
         move || (path.get(), file_list_version.get()),
@@ -425,6 +666,33 @@ pub fn FileListComponent(
                     let p = path.get();
                     if p.is_empty() { "/".to_string() } else { format!("/{}", p) }
                 }}
+            </div>
+
+            <div class="new-folder-row">
+                <input type="text" class="new-folder-input" placeholder="New folder name..."
+                    node_ref=folder_input_ref
+                    on:input=move |_| {
+                        if let Some(input) = folder_input_ref.get() {
+                            set_folder_name.set(input.value());
+                        }
+                    }
+                />
+                <button class="btn-primary" type="button"
+                    disabled=move || folder_name.get().is_empty()
+                    on:click=move |_| {
+                        let name = folder_name.get_untracked();
+                        let p = path.get_untracked();
+                        spawn_local(async move {
+                            if create_directory(p, name).await.is_ok() {
+                                set_file_list_version.update(|v| *v += 1);
+                            }
+                        });
+                        if let Some(input) = folder_input_ref.get() {
+                            input.set_value("");
+                        }
+                        set_folder_name.set(String::new());
+                    }
+                >"Create"</button>
             </div>
 
             <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
@@ -459,6 +727,9 @@ pub fn FileListComponent(
                                     encoded
                                 } else { "#".to_string() };
 
+                                let preview_link = link_target.clone();
+                                let is_img = is_image_file(&file_name) && file_type == "f";
+
                                 view! {
                                     <a
                                         href=link_target
@@ -488,6 +759,11 @@ pub fn FileListComponent(
                                         <span class="file-name">
                                             {if file_type == "d" { format!("{}/", file_name) } else { file_name.clone() }}
                                         </span>
+                                        {if is_img {
+                                            Some(view! { <img src=preview_link class="file-preview"/> })
+                                        } else {
+                                            None
+                                        }}
                                         <span class="file-size">
                                             {if file_type == "f" { file_size.fmt_size(Conventional).to_string() } else { "".to_string() }}
                                         </span>
@@ -504,19 +780,18 @@ pub fn FileListComponent(
 
 #[server]
 pub async fn get_chat_messages() -> Result<Vec<(String, String, u64)>, ServerFnError> {
-
     let base_path = std::env::current_dir()
-        .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
     let chat_file_path = base_path.join("chat.json");
 
     if !chat_file_path.exists() {
-        return Ok(Vec::new()); // Just return an empty list if no file exists
+        return Ok(Vec::new());
     }
 
-    let chat_file = std::fs::read_to_string(chat_file_path.clone())
-        .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
+    let chat_file = std::fs::read_to_string(&chat_file_path)
+        .map_err(|e| sfn_err(format!("Error reading chat file: {:?}", e)))?;
 
-    let chat_messages : Vec<(String, String, u64)> = if !chat_file.is_empty() {
+    let chat_messages: Vec<(String, String, u64)> = if !chat_file.is_empty() {
         serde_json::from_str(&chat_file).unwrap_or_default()
     } else {
         Vec::new()
@@ -536,49 +811,55 @@ pub async fn send_chat_message(
     use crate::app::ssr_imports::*;
 
     logging::log!("Chat message received: {:?}", chat_message);
-    let mut chat_name_clone = chat_name.clone();
+    let chat_name_clean = if chat_name.is_empty() {
+        "Anonymous".to_string()
+    } else {
+        chat_name
+    };
 
-    if chat_name_clone.clone().is_empty() {
-        chat_name_clone = "Anonymous".to_string();
-    }
-
-    // Read chat.json, parse it, append the new chat message, and write it back to chat.json
     let base_path = std::env::current_dir()
-    .map_err(|e| format!("Error getting current directory: {:?}", e)).unwrap();
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
     let chat_file_path = base_path.join("chat.json");
+    let chat_tmp_path = base_path.join("chat.json.tmp");
 
-    // Read chat file to string, create it if it doesn't exist
-    if !chat_file_path.exists() {
-        let chat_file = std::fs::File::create(chat_file_path.clone())
-            .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
-        chat_file.sync_all()
-            .map_err(|e| format!("Error syncing chat file: {:?}", e)).unwrap();
-    }
-
-    let chat_file = std::fs::read_to_string(chat_file_path.clone())
-        .map_err(|e| format!("Error reading chat file: {:?}", e)).unwrap();
-
-    let mut chat_messages : Vec<(String, String, u64)> = Vec::new();
-    // If chat file is not empty, parse it
-    if !chat_file.is_empty() {
-        chat_messages = serde_json::from_str(&chat_file)
-        .map_err(|e| format!("Error parsing chat file: {:?}", e)).unwrap();
-    }
+    // Read existing messages or start fresh
+    let mut chat_messages: Vec<(String, String, u64)> = if chat_file_path.exists() {
+        let chat_file = std::fs::read_to_string(&chat_file_path)
+            .map_err(|e| sfn_err(format!("Error reading chat file: {:?}", e)))?;
+        if !chat_file.is_empty() {
+            serde_json::from_str(&chat_file).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
 
     // Append the new chat message
-    if chat_message.len() > 0 && chat_message.len() < 1000 {
-        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        chat_messages.push((chat_name_clone, chat_message.clone(), timestamp));
-        // Write the chat messages back to chat.json
-        let chat_file = std::fs::File::create(chat_file_path)
-            .map_err(|e| format!("Error creating chat file: {:?}", e)).unwrap();
-        serde_json::to_writer(chat_file, &chat_messages)
-            .map_err(|e| format!("Error writing chat file: {:?}", e)).unwrap();
+    if !chat_message.is_empty() && chat_message.len() < 1000 {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        chat_messages.push((chat_name_clean, chat_message.clone(), timestamp));
+
+        // Atomic write: write to tmp then rename
+        let data = serde_json::to_string(&chat_messages)
+            .map_err(|e| sfn_err(format!("Error serializing chat: {:?}", e)))?;
+        std::fs::write(&chat_tmp_path, &data)
+            .map_err(|e| sfn_err(format!("Error writing chat tmp: {:?}", e)))?;
+        std::fs::rename(&chat_tmp_path, &chat_file_path)
+            .map_err(|e| sfn_err(format!("Error renaming chat file: {:?}", e)))?;
+
+        // Track stats
+        if let Ok(mut stats) = STATS.write() {
+            stats.total_chat_messages += 1;
+        }
+        save_stats();
 
         // Send signal to trigger SSE update
         _ = CHAT_CHANNEL.send(1);
     }
-    println!("Chat messages: {:?}", chat_messages);
     Ok(())
 }
 
@@ -596,7 +877,7 @@ pub fn ChatComponent(
     // Resource refetches when action completes or SSE chat update arrives
     let chat_messages_resource = Resource::new(
         move || (chat_version.get(), send_chat_message.version().get()),
-        |_| get_chat_messages()
+        |_| get_chat_messages(),
     );
 
     // After action completes, clear message input and restore name
@@ -666,10 +947,33 @@ pub fn ChatComponent(
                                 .and_then(|res| res.ok())
                                 .unwrap_or_default()
                             key=|msg| msg.2
-                            children=move |(user, message, _)| {
+                            children=move |(user, message, timestamp)| {
+                                let time_str = {
+                                    #[cfg(not(feature = "ssr"))]
+                                    {
+                                        let now = (js_sys::Date::now() / 1000.0) as u64;
+                                        let diff = now.saturating_sub(timestamp);
+                                        if diff < 60 {
+                                            "just now".to_string()
+                                        } else if diff < 3600 {
+                                            format!("{}m ago", diff / 60)
+                                        } else if diff < 86400 {
+                                            format!("{}h ago", diff / 3600)
+                                        } else {
+                                            format!("{}d ago", diff / 86400)
+                                        }
+                                    }
+                                    #[cfg(feature = "ssr")]
+                                    {
+                                        String::new()
+                                    }
+                                };
                                 view! {
                                     <div class="chat-message">
-                                        <span class="chat-author">{user}</span>
+                                        <div class="chat-message-header">
+                                            <span class="chat-author">{user}</span>
+                                            <span class="chat-time">{time_str}</span>
+                                        </div>
                                         <span class="chat-text">{message}</span>
                                     </div>
                                 }
@@ -703,12 +1007,105 @@ pub fn ChatComponent(
     }.into_any()
 }
 
+#[component]
+fn StatsPage() -> impl IntoView {
+    let stats = Resource::new(|| (), |_| get_stats());
+
+    view! {
+        <div class="app">
+            <header class="app-header">
+                <a href="/" rel="external" class="logo">"ShareBoxx"</a>
+                <a href="/stats" rel="external" class="header-link">"Stats"</a>
+            </header>
+            <div class="stats-page">
+                <h2 class="stats-title">"Server Statistics"</h2>
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
+                    {move || stats.get().and_then(|r| r.ok()).map(|s| {
+                        let top_downloads = s.top_downloads.clone();
+                        let has_downloads = !top_downloads.is_empty();
+                        view! {
+                            <div class="stats-grid">
+                                <div class="stat-card">
+                                    <div class="stat-value">{s.total_connections}</div>
+                                    <div class="stat-label">"Connections"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{s.total_uploads}</div>
+                                    <div class="stat-label">"Uploads"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{format_bytes(s.total_upload_bytes)}</div>
+                                    <div class="stat-label">"Data Uploaded"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{s.total_downloads}</div>
+                                    <div class="stat-label">"Downloads"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{format_bytes(s.total_download_bytes)}</div>
+                                    <div class="stat-label">"Data Downloaded"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{s.total_chat_messages}</div>
+                                    <div class="stat-label">"Chat Messages"</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">{format_uptime(s.uptime_seconds)}</div>
+                                    <div class="stat-label">"Uptime"</div>
+                                </div>
+                            </div>
+                            <div class="card">
+                                <div class="card-header"><h2>"Top Downloads"</h2></div>
+                                <div class="card-body">
+                                    {if has_downloads {
+                                        Some(view! {
+                                            <table class="top-downloads-table">
+                                                <thead><tr><th>"File"</th><th>"Downloads"</th></tr></thead>
+                                                <tbody>
+                                                    {top_downloads.iter().map(|(name, count)| view! {
+                                                        <tr><td>{name.clone()}</td><td>{*count}</td></tr>
+                                                    }).collect::<Vec<_>>()}
+                                                </tbody>
+                                            </table>
+                                        })
+                                    } else {
+                                        None
+                                    }}
+                                    {if !has_downloads {
+                                        Some(view! { <p class="text-muted">"No downloads yet."</p> })
+                                    } else {
+                                        None
+                                    }}
+                                </div>
+                            </div>
+                        }
+                    })}
+                </Suspense>
+            </div>
+        </div>
+    }.into_any()
+}
+
 #[cfg(feature = "ssr")]
 pub mod ssr_imports {
     pub use once_cell::sync::OnceCell;
+    pub use std::collections::HashMap;
     pub use std::sync::atomic::{AtomicI32, Ordering};
+    pub use std::sync::{Arc, RwLock};
 
     pub static CONNECTED_USERS: AtomicI32 = AtomicI32::new(0);
+
+    #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+    pub struct Stats {
+        pub total_connections: u64,
+        pub total_uploads: u64,
+        pub total_upload_bytes: u64,
+        pub total_downloads: u64,
+        pub total_download_bytes: u64,
+        pub total_chat_messages: u64,
+        pub file_downloads: HashMap<String, u64>,
+        pub started_at: u64,
+    }
 
     lazy_static::lazy_static! {
         pub static ref CHAT_CHANNEL: tokio::sync::broadcast::Sender<i32> = {
@@ -719,6 +1116,33 @@ pub mod ssr_imports {
             let (tx, _rx) = tokio::sync::broadcast::channel(16);
             tx
         };
+        pub static ref STATS: Arc<RwLock<Stats>> = {
+            let stats = load_stats().unwrap_or_else(|| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                Stats {
+                    started_at: now,
+                    ..Default::default()
+                }
+            });
+            Arc::new(RwLock::new(stats))
+        };
+    }
+
+    fn load_stats() -> Option<Stats> {
+        let data = std::fs::read_to_string("stats.json").ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    pub fn save_stats() {
+        if let Ok(stats) = STATS.read() {
+            if let Ok(data) = serde_json::to_string_pretty(&*stats) {
+                let _ = std::fs::write("stats.json.tmp", &data)
+                    .and_then(|_| std::fs::rename("stats.json.tmp", "stats.json"));
+            }
+        }
     }
 
     static LOG_INIT: OnceCell<()> = OnceCell::new();

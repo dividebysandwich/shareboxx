@@ -72,6 +72,25 @@ a {
   color: var(--text-primary);
 }
 
+.header-link {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .status-badge {
   display: flex;
   align-items: center;
@@ -190,6 +209,12 @@ a {
   padding: 18px;
 }
 
+.upload-card .card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 // ── Welcome ─────────────────────────────────
 
 .welcome-card .card-body {
@@ -263,6 +288,40 @@ a {
   margin-top: 8px;
   font-size: 0.85rem;
   color: var(--danger);
+}
+
+// ── Disk Space ──────────────────────────────
+
+.disk-space {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.disk-bar {
+  width: 100px;
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.disk-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 300ms ease;
+
+  &.warning {
+    background: var(--danger);
+  }
+}
+
+.disk-text {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 input[type="file"] {
@@ -365,6 +424,52 @@ input[type="file"] {
   white-space: nowrap;
 }
 
+.file-preview {
+  max-width: 100%;
+  max-height: 80px;
+  border-radius: var(--radius-sm);
+  margin-top: 6px;
+  object-fit: cover;
+}
+
+.file-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// ── New Folder ──────────────────────────────
+
+.new-folder-row {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.new-folder-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color var(--transition);
+
+  &:focus {
+    border-color: var(--accent);
+  }
+
+  &::placeholder {
+    color: var(--text-muted);
+  }
+}
+
 // ── Chat ────────────────────────────────────
 
 .chat-card {
@@ -392,11 +497,22 @@ input[type="file"] {
   border: 1px solid var(--border);
 }
 
+.chat-message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .chat-author {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--accent);
   margin-bottom: 2px;
+}
+
+.chat-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
 }
 
 .chat-text {
@@ -473,6 +589,83 @@ input[type="file"] {
   text-align: center;
 }
 
+// ── Stats Page ──────────────────────────────
+
+.stats-page {
+  padding: 24px;
+  max-width: 1000px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.stats-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.top-downloads-table {
+  width: 100%;
+  border-collapse: collapse;
+
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  th {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  td {
+    font-size: 0.9rem;
+  }
+
+  td:last-child {
+    text-align: right;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  tbody tr:hover {
+    background: var(--bg-hover);
+  }
+}
+
 // ── Desktop Layout ──────────────────────────
 
 @media (min-width: 769px) {
@@ -536,5 +729,21 @@ input[type="file"] {
     width: 28px;
     height: 28px;
     margin-right: 10px;
+  }
+
+  .stats-page {
+    padding: 12px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .disk-space {
+    display: none; // Hide on mobile to save space, or show below
+  }
+
+  .new-folder-row {
+    flex-wrap: wrap;
   }
 }
