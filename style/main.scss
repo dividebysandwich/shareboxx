@@ -261,8 +261,13 @@ input[type="file"] {
   background: var(--accent);
   color: #fff;
 
-  &:hover {
+  &:hover:not(:disabled) {
     background: var(--accent-hover);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 }
 

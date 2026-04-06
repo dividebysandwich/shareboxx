@@ -297,6 +297,9 @@ pub async fn get_file_list(
 pub fn FileUploadComponent(
     path: ReadSignal<String>,
 ) -> impl IntoView {
+    let file_input_ref: NodeRef<Input> = NodeRef::new();
+    let (has_file, set_has_file) = signal(false);
+
     view! {
         <div class="card upload-card">
             <div class="card-header">
@@ -305,8 +308,14 @@ pub fn FileUploadComponent(
             <div class="card-body">
                 <form action="/upload" method="post" enctype="multipart/form-data">
                     <input type="hidden" name="upload_path" value={path.clone()}/>
-                    <input type="file" multiple name="file"/>
-                    <button class="btn-primary" type="submit">"Upload"</button>
+                    <input type="file" multiple name="file" node_ref=file_input_ref
+                        on:change=move |_| {
+                            if let Some(input) = file_input_ref.get() {
+                                set_has_file.set(!input.value().is_empty());
+                            }
+                        }
+                    />
+                    <button class="btn-primary" type="submit" disabled=move || !has_file.get()>"Upload"</button>
                 </form>
             </div>
         </div>
