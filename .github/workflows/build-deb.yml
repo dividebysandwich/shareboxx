@@ -167,7 +167,6 @@ jobs:
 
           # Build the .deb
           dpkg-deb --build --root-owner-group "${DEB_DIR}"
-          mv "${DEB_DIR}.deb" "shareboxx_${VERSION}_${ARCH}.deb"
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
