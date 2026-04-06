@@ -1,0 +1,194 @@
+name: Build .deb packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            runner: ubuntu-24.04
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            runner: ubuntu-24.04
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+
+      - name: Install dart-sass
+        run: sudo npm install -g sass
+
+      - name: Install cargo-leptos
+        run: cargo install cargo-leptos --locked
+
+      - name: Install cross-compilation toolchain
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Configure cross-compilation linker
+        if: matrix.cross
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo leptos build --release
+
+      - name: Build (cross)
+        if: matrix.cross
+        env:
+          LEPTOS_BIN_TARGET_TRIPLE: ${{ matrix.target }}
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+        run: cargo leptos build --release
+
+      - name: Read package version
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble .deb
+        run: |
+          PKG_NAME="shareboxx"
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          DEB_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
+
+          # Directory structure
+          mkdir -p "${DEB_DIR}/DEBIAN"
+          mkdir -p "${DEB_DIR}/usr/bin"
+          mkdir -p "${DEB_DIR}/etc/systemd/system"
+          mkdir -p "${DEB_DIR}/var/lib/shareboxx/files"
+          mkdir -p "${DEB_DIR}/var/lib/shareboxx/site"
+
+          # Binary
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cp "target/${{ matrix.target }}/release/${PKG_NAME}" "${DEB_DIR}/usr/bin/"
+          else
+            cp "target/release/${PKG_NAME}" "${DEB_DIR}/usr/bin/"
+          fi
+          chmod 755 "${DEB_DIR}/usr/bin/${PKG_NAME}"
+
+          # Frontend assets (compiled by cargo-leptos into target/site)
+          cp -r target/site/* "${DEB_DIR}/var/lib/shareboxx/site/"
+
+          # Systemd service (patched for .deb paths)
+          cat > "${DEB_DIR}/etc/systemd/system/shareboxx.service" <<'SERVICE'
+          [Unit]
+          Description=Shareboxx Service
+          After=network.target
+
+          [Service]
+          WorkingDirectory=/var/lib/shareboxx
+          ExecStart=/usr/bin/shareboxx
+          Restart=on-failure
+          RestartSec=5
+          User=shareboxx
+          Group=shareboxx
+          Environment=LEPTOS_OUTPUT_NAME=shareboxx
+          Environment=LEPTOS_SITE_ROOT=/var/lib/shareboxx/site
+          Environment=LEPTOS_SITE_PKG_DIR=pkg
+          Environment=LEPTOS_SITE_ADDR=0.0.0.0:3000
+          Environment=LEPTOS_RELOAD_PORT=3001
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          # Control file
+          INSTALLED_SIZE=$(du -sk "${DEB_DIR}" | cut -f1)
+          cat > "${DEB_DIR}/DEBIAN/control" <<CTRL
+          Package: shareboxx
+          Version: ${VERSION}
+          Architecture: ${ARCH}
+          Maintainer: ShareBoxx Contributors
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libc6, libssl3 | libssl3t64
+          Description: Anonymous offline local file sharing and chat over WiFi
+           ShareBoxx turns a small Linux computer or Raspberry Pi into a wireless
+           anonymous offline local file sharing system. Anyone within WiFi range
+           can connect and freely upload, download files, and chat.
+          CTRL
+
+          # Post-install script
+          cat > "${DEB_DIR}/DEBIAN/postinst" <<'POSTINST'
+          #!/bin/sh
+          set -e
+          if ! getent group shareboxx > /dev/null 2>&1; then
+              addgroup --system shareboxx
+          fi
+          if ! getent passwd shareboxx > /dev/null 2>&1; then
+              adduser --system --ingroup shareboxx --home /var/lib/shareboxx --no-create-home shareboxx
+          fi
+          chown -R shareboxx:shareboxx /var/lib/shareboxx
+          chmod 755 /var/lib/shareboxx/files
+          systemctl daemon-reload
+          POSTINST
+          chmod 755 "${DEB_DIR}/DEBIAN/postinst"
+
+          # Pre-removal script
+          cat > "${DEB_DIR}/DEBIAN/prerm" <<'PRERM'
+          #!/bin/sh
+          set -e
+          if systemctl is-active --quiet shareboxx; then
+              systemctl stop shareboxx
+          fi
+          if systemctl is-enabled --quiet shareboxx; then
+              systemctl disable shareboxx
+          fi
+          PRERM
+          chmod 755 "${DEB_DIR}/DEBIAN/prerm"
+
+          # Conffiles (prevent overwrite on upgrade)
+          echo "/etc/systemd/system/shareboxx.service" > "${DEB_DIR}/DEBIAN/conffiles"
+
+          # Build the .deb
+          dpkg-deb --build --root-owner-group "${DEB_DIR}"
+          mv "${DEB_DIR}.deb" "shareboxx_${VERSION}_${ARCH}.deb"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shareboxx-${{ matrix.arch }}
+          path: "*.deb"
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.deb"
+          generate_release_notes: true
