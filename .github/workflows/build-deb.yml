@@ -14,13 +14,16 @@ jobs:
     strategy:
       matrix:
         include:
+          # Build on ubuntu-22.04 (glibc 2.35) so binaries run on Raspberry Pi OS
+          # Bookworm (glibc 2.36) and newer. ubuntu-24.04 ships glibc 2.39 which
+          # is too new — binaries built there fail with "GLIBC_2.39 not found".
           - target: x86_64-unknown-linux-gnu
             arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             cross: false
           - target: aarch64-unknown-linux-gnu
             arch: arm64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             cross: true
     runs-on: ${{ matrix.runner }}
     steps:
