@@ -26,8 +26,11 @@ err()   { echo -e "${RED}[error]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}── $* ──${NC}"; }
 
 ask() {
+    # The prompt MUST go to stderr — `ask` is invoked via command substitution
+    # (`VAR=$(ask ...)`), which captures stdout. If the prompt were on stdout
+    # it would end up inside VAR instead of on the user's terminal.
     local prompt="$1" default="$2" reply
-    echo -en "${BOLD}$prompt${NC} [${default}]: "
+    echo -en "${BOLD}$prompt${NC} [${default}]: " >&2
     read -r reply
     echo "${reply:-$default}"
 }
