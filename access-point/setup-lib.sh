@@ -678,5 +678,36 @@ Configuration files:
   nginx:     ${NGINX_SITE_CONF:-/etc/nginx/sites-available/shareboxx}
   shareboxx: /etc/systemd/system/shareboxx.service
   files:     /var/lib/shareboxx/files/
+
+Using a USB stick for storage:
+
+  ShareBoxx serves whatever is in /var/lib/shareboxx/files/. To use a USB
+  stick (or any larger disk) as the storage backend, mount it there. Two
+  common approaches:
+
+  1) Mount the USB stick directly at /var/lib/shareboxx/files/
+       sudo systemctl stop shareboxx
+       lsblk                                  # find your device, e.g. sda1
+       sudo mkdir -p /var/lib/shareboxx/files
+       echo '/dev/sda1  /var/lib/shareboxx/files  auto  defaults,nofail,uid=shareboxx,gid=shareboxx  0 2' \\
+            | sudo tee -a /etc/fstab
+       sudo mount /var/lib/shareboxx/files
+       sudo systemctl start shareboxx
+
+  2) Bind-mount an existing path (e.g. when the disk is already mounted
+     elsewhere like /mnt/bigdisk):
+       sudo rsync -a /var/lib/shareboxx/files/ /mnt/bigdisk/shareboxx-files/
+       sudo chown -R shareboxx:shareboxx /mnt/bigdisk/shareboxx-files
+       echo '/mnt/bigdisk/shareboxx-files  /var/lib/shareboxx/files  none  bind  0 0' \\
+            | sudo tee -a /etc/fstab
+       sudo mount /var/lib/shareboxx/files
+
+  Filesystem notes:
+  - exFAT/FAT32 sticks: replace 'auto' with 'exfat' or 'vfat'. They don't
+    support Unix permissions, so the uid=/gid= options are required.
+  - ext4/btrfs/xfs sticks: drop the uid=/gid= options and instead chown
+    once after first mount: sudo chown -R shareboxx:shareboxx /var/lib/shareboxx/files
+  - 'nofail' lets the system boot even if the stick is missing; ShareBoxx
+    will then serve an empty directory until you plug it back in.
 INFO
 }

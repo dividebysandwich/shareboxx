@@ -37,14 +37,55 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 #### Option B — Build from source (any distro)
 
 - Install rust (see https://rustup.rs for instructions)
-- Install the runtime dependencies through your distro's package manager: `hostapd dnsmasq dhcpcd nginx openssl iw iptables` (on Debian-based systems also `netfilter-persistent iptables-persistent`)
+- Install the runtime dependencies through your distro's package manager: `hostapd dnsmasq nginx openssl iw iproute2 iptables` (on Debian-based systems also `netfilter-persistent iptables-persistent`)
 - Clone the repository: `git clone https://github.com/dividebysandwich/shareboxx`
 - Compile: `cargo install cargo-leptos && cargo leptos build --release`
 - Run the all-in-one installer: `sudo ./access-point/install-from-source.sh`
-- It will detect your wireless adapter(s), let you select which one to use, and configure everything (binary, systemd service, dhcpcd, dnsmasq, hostapd, iptables, nginx + self-signed SSL)
+- It will detect your wireless adapter(s), let you select which one to use, and configure everything (binary, systemd service, dnsmasq, hostapd, iptables, nginx + self-signed SSL)
 
-Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /var/lib/shareboxx/files, or you can copy files onto a USB drive and mount that under /var/lib/shareboxx/files for example.
+Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. The web UI lets you upload to `/var/lib/shareboxx/files` directly. For larger libraries, see "Using a USB stick for storage" below.
+
 You may want to install a [malware detection tool](https://github.com/dividebysandwich/shareboxx/wiki/How-to-set-up-a-malware-scanner-to-automatically-scan-uploads) to automatically scan uploaded files.
+
+### Using a USB stick for storage
+
+Shareboxx serves whatever lives in `/var/lib/shareboxx/files/`. To back the share with a USB stick (or any external disk), mount it there. Two recipes:
+
+**1) Mount the USB stick directly at the share path** — simplest if the stick is dedicated to Shareboxx.
+
+```bash
+sudo systemctl stop shareboxx
+lsblk                                  # find your device, e.g. /dev/sda1
+sudo mkdir -p /var/lib/shareboxx/files
+
+# /etc/fstab entry — pick the right filesystem type:
+# exFAT/FAT32 stick (no Unix permissions, so uid/gid are required):
+echo '/dev/sda1  /var/lib/shareboxx/files  exfat  defaults,nofail,uid=shareboxx,gid=shareboxx  0 2' \
+     | sudo tee -a /etc/fstab
+# ext4/btrfs/xfs stick (drop uid/gid; chown once after mount):
+# echo '/dev/sda1  /var/lib/shareboxx/files  auto   defaults,nofail  0 2' | sudo tee -a /etc/fstab
+
+sudo mount /var/lib/shareboxx/files
+sudo chown -R shareboxx:shareboxx /var/lib/shareboxx/files   # ext4/btrfs/xfs only
+sudo systemctl start shareboxx
+```
+
+**2) Bind-mount an already-mounted path** — useful if the stick is already mounted elsewhere (e.g. `/mnt/bigdisk`), or if you want to share an existing folder without moving it.
+
+```bash
+sudo systemctl stop shareboxx
+sudo rsync -a /var/lib/shareboxx/files/ /mnt/bigdisk/shareboxx-files/
+sudo chown -R shareboxx:shareboxx /mnt/bigdisk/shareboxx-files
+echo '/mnt/bigdisk/shareboxx-files  /var/lib/shareboxx/files  none  bind  0 0' \
+     | sudo tee -a /etc/fstab
+sudo mount /var/lib/shareboxx/files
+sudo systemctl start shareboxx
+```
+
+Notes:
+- `nofail` lets the Pi boot even if the stick isn't plugged in; Shareboxx will then serve an empty directory until you reconnect it.
+- For a stick that's plugged/unplugged at runtime, replace the fstab entry with a systemd `.mount` + `.automount` pair so Shareboxx auto-recovers.
+- If the disk is on its own mount point, ensure it comes up before `shareboxx.service` starts — the simplest way is to add `x-systemd.before=shareboxx.service` to the fstab options.
 
 ### Development
 
