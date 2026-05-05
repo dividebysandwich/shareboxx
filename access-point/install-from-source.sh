@@ -76,7 +76,7 @@ fi
 
 step "Checking required commands"
 
-REQUIRED_CMDS=(hostapd dnsmasq dhcpcd nginx openssl iw iptables systemctl)
+REQUIRED_CMDS=(hostapd dnsmasq nginx openssl iw ip iptables systemctl)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
@@ -85,10 +85,10 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     err "Missing required commands: ${MISSING[*]}"
     cat <<HINT
 Install them with your distro's package manager, e.g.:
-  Arch:    pacman -S hostapd dnsmasq dhcpcd nginx openssl iw iptables
-  Fedora:  dnf install hostapd dnsmasq dhcpcd nginx openssl iw iptables iptables-services
-  openSUSE: zypper install hostapd dnsmasq dhcpcd nginx openssl iw iptables
-  Debian:  apt install hostapd dnsmasq dhcpcd5 nginx openssl iw iptables \\
+  Arch:    pacman -S hostapd dnsmasq nginx openssl iw iproute2 iptables
+  Fedora:  dnf install hostapd dnsmasq nginx openssl iw iproute iptables iptables-services
+  openSUSE: zypper install hostapd dnsmasq nginx openssl iw iproute2 iptables
+  Debian:  apt install hostapd dnsmasq nginx openssl iw iproute2 iptables \\
                        netfilter-persistent iptables-persistent
 HINT
     exit 1
@@ -169,7 +169,7 @@ systemctl stop dnsmasq   2>/dev/null || true
 systemctl stop hostapd   2>/dev/null || true
 systemctl stop shareboxx 2>/dev/null || true
 
-configure_dhcpcd
+configure_ap_interface
 configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect

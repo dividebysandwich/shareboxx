@@ -69,6 +69,9 @@ NM_UNMANAGE_CONF="/etc/NetworkManager/conf.d/shareboxx-unmanaged.conf"
 HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
 CERT_PATH="/etc/ssl/certs/shareboxx-selfsigned.crt"
 KEY_PATH="/etc/ssl/private/shareboxx-selfsigned.key"
+AP_UNIT="/etc/systemd/system/shareboxx-ap.service"
+DNSMASQ_DROPIN="/etc/systemd/system/dnsmasq.service.d/shareboxx.conf"
+HOSTAPD_DROPIN="/etc/systemd/system/hostapd.service.d/shareboxx.conf"
 
 # ── iptables persistence (distro-aware) ─────────────────────────────────────
 
@@ -106,8 +109,22 @@ do_uninstall() {
     step "Reverting ShareBoxx access-point configuration"
 
     info "Stopping services"
-    systemctl stop shareboxx hostapd dnsmasq 2>/dev/null || true
-    systemctl disable hostapd dnsmasq 2>/dev/null || true
+    systemctl stop shareboxx hostapd dnsmasq shareboxx-ap 2>/dev/null || true
+    systemctl disable hostapd dnsmasq shareboxx-ap 2>/dev/null || true
+
+    # Remove drop-ins BEFORE the AP unit so dnsmasq/hostapd don't end up
+    # referencing a missing Requires= target between operations.
+    if [[ -f "$DNSMASQ_DROPIN" || -f "$HOSTAPD_DROPIN" ]]; then
+        rm -f "$DNSMASQ_DROPIN" "$HOSTAPD_DROPIN"
+        rmdir --ignore-fail-on-non-empty /etc/systemd/system/dnsmasq.service.d 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty /etc/systemd/system/hostapd.service.d 2>/dev/null || true
+        ok "Removed dnsmasq/hostapd drop-ins"
+    fi
+    if [[ -f "$AP_UNIT" ]]; then
+        rm -f "$AP_UNIT"
+        ok "Removed $AP_UNIT"
+    fi
+    systemctl daemon-reload
 
     if [[ -f "$DHCPCD_CONF" ]] && grep -qF "$MARKER" "$DHCPCD_CONF"; then
         sed -i "/$MARKER/,/^$/d" "$DHCPCD_CONF"
@@ -382,25 +399,75 @@ prompt_config() {
 
 # ── Service configuration ───────────────────────────────────────────────────
 
-configure_dhcpcd() {
-    step "Configuring static IP on $IFACE"
+configure_ap_interface() {
+    step "Configuring AP interface (synchronous static IP via systemd unit)"
 
-    if [[ -f "$DHCPCD_CONF" ]] && grep -qF "$MARKER" "$DHCPCD_CONF"; then
-        sed -i "/$MARKER/,/^$/d" "$DHCPCD_CONF"
-        info "Removed previous ShareBoxx block from $DHCPCD_CONF"
+    # Stop any previous run of the unit so its old ExecStop removes the
+    # previously assigned address before we overwrite the unit file.
+    if [[ -f "$AP_UNIT" ]]; then
+        systemctl stop shareboxx-ap.service 2>/dev/null || true
     fi
-    mkdir -p "$(dirname "$DHCPCD_CONF")"
-    touch "$DHCPCD_CONF"
-    cat >> "$DHCPCD_CONF" <<EOF
+
+    # If dhcpcd is in the picture, tell it to ignore the AP interface — we
+    # manage the IP ourselves below. Also strip any legacy ShareBoxx block
+    # from older installs that configured a static IP via dhcpcd.
+    if [[ -f "$DHCPCD_CONF" ]]; then
+        if grep -qF "$MARKER" "$DHCPCD_CONF"; then
+            sed -i "/$MARKER/,/^$/d" "$DHCPCD_CONF"
+        fi
+        cat >> "$DHCPCD_CONF" <<EOF
 $MARKER
-interface $IFACE
-    static ip_address=${AP_IP}/24
-    nohook wpa_supplicant
+denyinterfaces $IFACE
 
 EOF
-    systemctl enable dhcpcd 2>/dev/null || true
-    systemctl restart dhcpcd 2>/dev/null || true
-    ok "Static IP ${AP_IP}/24 configured on $IFACE"
+        systemctl restart dhcpcd 2>/dev/null || true
+    fi
+
+    local ip_bin
+    ip_bin=$(command -v ip || true)
+    if [[ -z "$ip_bin" ]]; then
+        err "'ip' command not found — install iproute2."
+        exit 1
+    fi
+
+    # The unit applies the IP synchronously before hostapd/dnsmasq start.
+    # Type=oneshot + RemainAfterExit=yes lets dependents wait for it cleanly.
+    cat > "$AP_UNIT" <<EOF
+[Unit]
+Description=ShareBoxx access-point interface setup ($IFACE)
+After=sys-subsystem-net-devices-${IFACE}.device
+Wants=sys-subsystem-net-devices-${IFACE}.device
+Before=hostapd.service dnsmasq.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$ip_bin link set $IFACE up
+ExecStart=$ip_bin addr replace ${AP_IP}/24 dev $IFACE
+ExecStop=-$ip_bin addr del ${AP_IP}/24 dev $IFACE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Drop-ins so hostapd/dnsmasq won't start until the IP is on the
+    # interface — this is what fixes the dnsmasq "Cannot assign requested
+    # address" race seen with the dhcpcd-based static-IP approach.
+    mkdir -p "$(dirname "$DNSMASQ_DROPIN")" "$(dirname "$HOSTAPD_DROPIN")"
+    cat > "$DNSMASQ_DROPIN" <<EOF
+[Unit]
+After=shareboxx-ap.service
+Requires=shareboxx-ap.service
+EOF
+    cat > "$HOSTAPD_DROPIN" <<EOF
+[Unit]
+After=shareboxx-ap.service
+Requires=shareboxx-ap.service
+EOF
+
+    systemctl daemon-reload
+    systemctl enable shareboxx-ap.service
+    ok "shareboxx-ap.service installed (sets ${AP_IP}/24 on $IFACE before dnsmasq/hostapd)"
 }
 
 configure_dnsmasq() {
@@ -562,7 +629,9 @@ EOF
 start_services_and_check() {
     step "Starting services"
 
-    systemctl restart dhcpcd  2>/dev/null || true
+    # shareboxx-ap.service must come up first — its drop-ins guarantee
+    # hostapd/dnsmasq won't start until it has applied the IP.
+    systemctl restart shareboxx-ap.service
     systemctl restart dnsmasq
     systemctl restart hostapd
     systemctl restart nginx
@@ -571,7 +640,7 @@ start_services_and_check() {
     sleep 2
     ALL_OK=1
     local svc
-    for svc in hostapd dnsmasq nginx shareboxx; do
+    for svc in shareboxx-ap hostapd dnsmasq nginx shareboxx; do
         if systemctl is-active --quiet "$svc"; then
             ok "$svc is running"
         else
@@ -605,7 +674,7 @@ print_summary() {
 Configuration files:
   hostapd:   $HOSTAPD_CONF
   dnsmasq:   $DNSMASQ_CONF
-  dhcpcd:    $DHCPCD_CONF
+  AP setup:  $AP_UNIT  (sets ${AP_IP}/24 on $IFACE)
   nginx:     ${NGINX_SITE_CONF:-/etc/nginx/sites-available/shareboxx}
   shareboxx: /etc/systemd/system/shareboxx.service
   files:     /var/lib/shareboxx/files/
