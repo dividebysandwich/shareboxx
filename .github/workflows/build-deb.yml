@@ -83,6 +83,7 @@ jobs:
           # Directory structure
           mkdir -p "${DEB_DIR}/DEBIAN"
           mkdir -p "${DEB_DIR}/usr/bin"
+          mkdir -p "${DEB_DIR}/usr/lib/shareboxx"
           mkdir -p "${DEB_DIR}/etc/systemd/system"
           mkdir -p "${DEB_DIR}/var/lib/shareboxx/files"
           mkdir -p "${DEB_DIR}/var/lib/shareboxx/site"
@@ -95,9 +96,11 @@ jobs:
           fi
           chmod 755 "${DEB_DIR}/usr/bin/${PKG_NAME}"
 
-          # Setup script
+          # Setup script + shared library
           cp access-point/shareboxx-setup "${DEB_DIR}/usr/bin/shareboxx-setup"
           chmod 755 "${DEB_DIR}/usr/bin/shareboxx-setup"
+          cp access-point/setup-lib.sh "${DEB_DIR}/usr/lib/shareboxx/setup-lib.sh"
+          chmod 644 "${DEB_DIR}/usr/lib/shareboxx/setup-lib.sh"
 
           # Frontend assets (compiled by cargo-leptos into target/site)
           cp -r target/site/* "${DEB_DIR}/var/lib/shareboxx/site/"
@@ -133,7 +136,7 @@ jobs:
           Architecture: ${ARCH}
           Maintainer: ShareBoxx Contributors
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libc6, libssl3 | libssl3t64
+          Depends: libc6, libssl3 | libssl3t64, hostapd, dnsmasq, nginx, iw, openssl, iptables, netfilter-persistent, iptables-persistent, dhcpcd5 | dhcpcd-base | dhcpcd
           Description: Anonymous offline local file sharing and chat over WiFi
            ShareBoxx turns a small Linux computer or Raspberry Pi into a wireless
            anonymous offline local file sharing system. Anyone within WiFi range
@@ -153,10 +156,25 @@ jobs:
           chown -R shareboxx:shareboxx /var/lib/shareboxx
           chmod 755 /var/lib/shareboxx/files
           systemctl daemon-reload
-          echo ""
-          echo "ShareBoxx installed. To set up WiFi access point & captive portal, run:"
-          echo "  sudo shareboxx-setup"
-          echo ""
+
+          # Run interactive setup only when we have a real terminal AND apt isn't
+          # forcing a non-interactive frontend. Otherwise leave configuration to
+          # the user (e.g., automated installs, container builds).
+          if [ -t 0 ] && [ -t 1 ] && [ "${DEBIAN_FRONTEND:-}" != "noninteractive" ]; then
+              echo ""
+              echo "Launching ShareBoxx WiFi access point setup..."
+              echo "(You can re-run this later with: sudo shareboxx-setup)"
+              echo ""
+              if ! /usr/bin/shareboxx-setup --from-postinst </dev/tty >/dev/tty 2>&1; then
+                  echo ""
+                  echo "Setup did not complete. Run 'sudo shareboxx-setup' to retry."
+              fi
+          else
+              echo ""
+              echo "ShareBoxx installed. To set up WiFi access point & captive portal, run:"
+              echo "  sudo shareboxx-setup"
+              echo ""
+          fi
           POSTINST
           chmod 755 "${DEB_DIR}/DEBIAN/postinst"
 

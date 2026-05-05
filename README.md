@@ -26,17 +26,24 @@ Do not put Shareboxx on the internet. It is meant to be run on an isolated syste
 
 ### Installation:
 
-- Get a small linux computer. See the [Wiki](https://github.com/dividebysandwich/shareboxx/wiki) for hardware suggestions
-- Install rust (see https://rustup.rs for instructions)
-- Clone repository on your small linux computer or raspberry pi: ```git clone https://github.com/dividebysandwich/shareboxx```
-- Compile: ```cargo install cargo-leptos&&cargo leptos build --release```
-- ```cd access-point```
-- Edit hostapd.conf and dnsmasq.conf to taste - You might want to get an extra wifi adapter with a good antenna, see the [Wiki](https://github.com/dividebysandwich/shareboxx/wiki) for suggested dongles and additional instructions. If you decide to use an USB wifi adapter instead of the built-in Wifi, remember to change ```wlan0``` to ```wlan1``` in hostapd.conf and dnsmasq.conf
-- Run ```sudo ./enable-captive-portal.sh```
-- Run ```sudo ./setup-server.sh```
-- Run ```sudo ./setup-ssl.sh```
+#### Option A — Debian / Raspberry Pi OS (.deb package, recommended)
 
-Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /shareboxx/files, or you can copy files onto a USB drive and mount that under /shareboxx/files for example.
+- Get a small linux computer. See the [Wiki](https://github.com/dividebysandwich/shareboxx/wiki) for hardware suggestions
+- Download the latest `shareboxx_*.deb` for your architecture from the [Releases page](https://github.com/dividebysandwich/shareboxx/releases)
+- Install: `sudo apt install ./shareboxx_*.deb`
+- The post-install step will detect your wireless adapter(s), let you pick one, and configure the access point, captive portal, and SSL automatically
+- To re-run setup later: `sudo shareboxx-setup`
+
+#### Option B — Build from source (any distro)
+
+- Install rust (see https://rustup.rs for instructions)
+- Install the runtime dependencies through your distro's package manager: `hostapd dnsmasq dhcpcd nginx openssl iw iptables` (on Debian-based systems also `netfilter-persistent iptables-persistent`)
+- Clone the repository: `git clone https://github.com/dividebysandwich/shareboxx`
+- Compile: `cargo install cargo-leptos && cargo leptos build --release`
+- Run the all-in-one installer: `sudo ./access-point/install-from-source.sh`
+- It will detect your wireless adapter(s), let you select which one to use, and configure everything (binary, systemd service, dhcpcd, dnsmasq, hostapd, iptables, nginx + self-signed SSL)
+
+Done! You should now be able to connect to the Shareboxx access point and be directed to the Shareboxx main page. You can use the web UI to copy files to /var/lib/shareboxx/files, or you can copy files onto a USB drive and mount that under /var/lib/shareboxx/files for example.
 You may want to install a [malware detection tool](https://github.com/dividebysandwich/shareboxx/wiki/How-to-set-up-a-malware-scanner-to-automatically-scan-uploads) to automatically scan uploaded files.
 
 ### Development
