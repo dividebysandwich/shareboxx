@@ -115,7 +115,7 @@ else
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq dnsmasq hostapd iw iproute2 \
-        netfilter-persistent iptables-persistent
+        netfilter-persistent iptables-persistent xxd
     ok "Packages installed"
 fi
 

@@ -86,7 +86,7 @@ fi
 
 step "Checking required commands"
 
-REQUIRED_CMDS=(hostapd dnsmasq iw ip iptables systemctl)
+REQUIRED_CMDS=(hostapd dnsmasq iw ip iptables systemctl sha256sum xxd)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
@@ -95,11 +95,14 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     err "Missing required commands: ${MISSING[*]}"
     cat <<HINT
 Install them with your distro's package manager, e.g.:
-  Arch:    pacman -S hostapd dnsmasq iw iproute2 iptables
-  Fedora:  dnf install hostapd dnsmasq iw iproute iptables iptables-services
-  openSUSE: zypper install hostapd dnsmasq iw iproute2 iptables
+  Arch:    pacman -S hostapd dnsmasq iw iproute2 iptables coreutils xxd
+  Fedora:  dnf install hostapd dnsmasq iw iproute iptables iptables-services coreutils vim-common
+  openSUSE: zypper install hostapd dnsmasq iw iproute2 iptables coreutils xxd
   Debian:  apt install hostapd dnsmasq iw iproute2 iptables \\
-                       netfilter-persistent iptables-persistent
+                       netfilter-persistent iptables-persistent xxd
+
+(sha256sum ships in coreutils; xxd ships in the 'xxd' package on
+Debian/Ubuntu/Arch and in 'vim-common' on Fedora/RHEL.)
 HINT
     exit 1
 fi
