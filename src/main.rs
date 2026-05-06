@@ -194,11 +194,14 @@ async fn domain_redirect(
     next: Next<impl MessageBody + 'static>,
 ) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
     // Check if request hostname matches shareboxx.lan, otherwise redirect to it.
+    // ShareBoxx is HTTP-only by design — see README "Why no HTTPS?". Browsers'
+    // captive-portal probes use plain HTTP and modern HTTPS-First modes carve
+    // out RFC1918 / *.lan addresses, so HTTP is sustainable for this device.
     if req.connection_info().host() != "shareboxx.lan" && !req.connection_info().host().starts_with("127.0.0.1") {
         return Ok(ServiceResponse::new(
             req.request().to_owned(),
             HttpResponse::TemporaryRedirect()
-                .append_header(("Location", "https://shareboxx.lan"))
+                .append_header(("Location", "http://shareboxx.lan"))
                 .finish(),
         )
         .map_into_boxed_body());

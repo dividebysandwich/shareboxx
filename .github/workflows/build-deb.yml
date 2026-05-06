@@ -136,7 +136,7 @@ jobs:
           Architecture: ${ARCH}
           Maintainer: ShareBoxx Contributors
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libc6, libssl3 | libssl3t64, hostapd, dnsmasq, nginx, iw, iproute2, openssl, iptables, netfilter-persistent, iptables-persistent
+          Depends: libc6, libssl3 | libssl3t64, hostapd, dnsmasq, iw, iproute2, iptables, netfilter-persistent, iptables-persistent
           Description: Anonymous offline local file sharing and chat over WiFi
            ShareBoxx turns a small Linux computer or Raspberry Pi into a wireless
            anonymous offline local file sharing system. Anyone within WiFi range

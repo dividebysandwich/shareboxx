@@ -84,8 +84,6 @@ DHCPCD_CONF="/etc/dhcpcd.conf"
 DNSMASQ_CONF="/etc/dnsmasq.d/shareboxx.conf"
 NM_UNMANAGE_CONF="/etc/NetworkManager/conf.d/shareboxx-unmanaged.conf"
 HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
-CERT_PATH="/etc/ssl/certs/shareboxx-selfsigned.crt"
-KEY_PATH="/etc/ssl/private/shareboxx-selfsigned.key"
 AP_UNIT="/etc/systemd/system/shareboxx-ap.service"
 DNSMASQ_DROPIN="/etc/systemd/system/dnsmasq.service.d/shareboxx.conf"
 HOSTAPD_DROPIN="/etc/systemd/system/hostapd.service.d/shareboxx.conf"
@@ -93,6 +91,11 @@ CLEANUP_SERVICE="/etc/systemd/system/shareboxx-cleanup.service"
 CLEANUP_TIMER="/etc/systemd/system/shareboxx-cleanup.timer"
 SHAREBOXX_FILES_DIR="/var/lib/shareboxx/files"
 TEMPFILE_MAX_AGE_MINUTES="2880"  # 48h — generous enough not to kill long uploads
+
+# Legacy HTTPS paths — only referenced by cleanup_legacy_https() below for
+# users upgrading from the pre-HTTP-only era. Not used by the active config.
+LEGACY_CERT_PATH="/etc/ssl/certs/shareboxx-selfsigned.crt"
+LEGACY_KEY_PATH="/etc/ssl/private/shareboxx-selfsigned.key"
 
 # ── iptables persistence (distro-aware) ─────────────────────────────────────
 
@@ -139,6 +142,8 @@ do_uninstall() {
     systemctl disable hostapd dnsmasq shareboxx-ap 2>/dev/null || true
     systemctl stop shareboxx-cleanup.timer 2>/dev/null || true
     systemctl disable shareboxx-cleanup.timer 2>/dev/null || true
+    # Legacy: nginx may have been used by older HTTPS-based installs.
+    cleanup_legacy_https quiet
 
     # Remove drop-ins BEFORE the AP unit so dnsmasq/hostapd don't end up
     # referencing a missing Requires= target between operations.
@@ -187,14 +192,6 @@ do_uninstall() {
     remove_iptables_rules
     persist_iptables
     ok "Removed ShareBoxx iptables rules"
-
-    rm -f /etc/nginx/sites-available/shareboxx \
-          /etc/nginx/sites-enabled/shareboxx \
-          /etc/nginx/conf.d/shareboxx.conf
-    if command -v nginx &>/dev/null && nginx -t &>/dev/null; then
-        systemctl reload nginx 2>/dev/null || true
-    fi
-    ok "Removed nginx ShareBoxx site"
 
     echo ""
     info "Access-point configuration reverted."
@@ -577,144 +574,59 @@ configure_iptables_redirect() {
     iptables -t nat -I PREROUTING -i "$IFACE" -p tcp --dport 80 \
         -m comment --comment "shareboxx-http" \
         -j DNAT --to-destination "${AP_IP}:3000"
-    iptables -t nat -I PREROUTING -i "$IFACE" -p tcp --dport 443 \
-        -m comment --comment "shareboxx-https" \
-        -j DNAT --to-destination "${AP_IP}:3443"
     iptables -A INPUT -i "$IFACE" -p tcp --dport 22 \
         -m comment --comment "shareboxx-ssh-block" -j DROP
 
     persist_iptables
-    ok "iptables rules configured (HTTP→:3000, HTTPS→:3443, SSH blocked on $IFACE)"
+    ok "iptables rules configured (HTTP→:3000, SSH blocked on $IFACE)"
 }
 
-# Sets: NGINX_SITE_CONF
-configure_nginx_ssl() {
-    step "Setting up SSL (nginx reverse proxy)"
+# Migrate from the old HTTPS-via-nginx setup. Older installs configured an
+# nginx reverse proxy with a self-signed cert; ShareBoxx is now HTTP-only
+# (see README "Why no HTTPS?"). This removes the legacy nginx site files
+# and self-signed cert/key. We do NOT disable nginx itself — it may be
+# serving other things on the user's box.
+#
+# Pass "quiet" to suppress the step header (used from do_uninstall).
+cleanup_legacy_https() {
+    local quiet="${1:-}"
+    local found=0
+    local f
+    for f in /etc/nginx/sites-available/shareboxx \
+             /etc/nginx/sites-enabled/shareboxx \
+             /etc/nginx/conf.d/shareboxx.conf \
+             "$LEGACY_CERT_PATH" \
+             "$LEGACY_KEY_PATH"; do
+        [[ -e "$f" || -L "$f" ]] && found=1
+    done
+    [[ "$found" -eq 0 ]] && return 0
 
-    mkdir -p /etc/ssl/certs /etc/ssl/private
-    local regen
-    if [[ -f "$CERT_PATH" && -f "$KEY_PATH" ]]; then
-        info "SSL certificate already exists, keeping it."
-        confirm "Regenerate?" n && regen=1 || regen=0
-    else
-        regen=1
-    fi
-    if [[ "$regen" -eq 1 ]]; then
-        openssl req -x509 -nodes -days 3650 \
-            -newkey rsa:2048 \
-            -keyout "$KEY_PATH" \
-            -out "$CERT_PATH" \
-            -subj "/CN=shareboxx.lan/O=ShareBoxx/C=$COUNTRY" \
-            2>/dev/null
-        ok "Self-signed certificate generated (valid 10 years)"
-    fi
+    [[ "$quiet" != "quiet" ]] && step "Removing legacy HTTPS / nginx config"
 
-    # Pick the canonical location for this distro's nginx layout.
-    if [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]]; then
-        NGINX_SITE_CONF="/etc/nginx/sites-available/shareboxx"
-    elif [[ -d /etc/nginx/conf.d ]]; then
-        NGINX_SITE_CONF="/etc/nginx/conf.d/shareboxx.conf"
-    else
-        mkdir -p /etc/nginx/conf.d
-        NGINX_SITE_CONF="/etc/nginx/conf.d/shareboxx.conf"
-    fi
-
-    # Defensively remove ANY shareboxx site we did not pick — older installs
-    # may have written to the other location, leaving a stale duplicate that
-    # silently shadows the new config (or causes a duplicate default_server).
-    local stale
-    for stale in /etc/nginx/sites-available/shareboxx \
-                 /etc/nginx/sites-enabled/shareboxx \
-                 /etc/nginx/conf.d/shareboxx.conf; do
-        if [[ "$stale" != "$NGINX_SITE_CONF" ]] \
-           && [[ "$stale" != "/etc/nginx/sites-enabled/shareboxx" \
-                 || "$NGINX_SITE_CONF" != /etc/nginx/sites-available/* ]] \
-           && [[ -e "$stale" || -L "$stale" ]]; then
-            rm -f "$stale"
-            info "Removed stale $stale"
+    for f in /etc/nginx/sites-available/shareboxx \
+             /etc/nginx/sites-enabled/shareboxx \
+             /etc/nginx/conf.d/shareboxx.conf; do
+        if [[ -e "$f" || -L "$f" ]]; then
+            rm -f "$f"
+            [[ "$quiet" != "quiet" ]] && ok "Removed $f"
         fi
     done
-
-    # If something has flagged the file immutable (chattr +i), the cat below
-    # would silently fail and we'd end up with the old contents. Strip it.
-    if command -v lsattr &>/dev/null && [[ -f "$NGINX_SITE_CONF" ]] \
-       && lsattr "$NGINX_SITE_CONF" 2>/dev/null | awk '{print $1}' | grep -q i; then
-        chattr -i "$NGINX_SITE_CONF" 2>/dev/null || true
-        warn "Cleared immutable flag on $NGINX_SITE_CONF"
+    if [[ -f "$LEGACY_CERT_PATH" || -f "$LEGACY_KEY_PATH" ]]; then
+        rm -f "$LEGACY_CERT_PATH" "$LEGACY_KEY_PATH"
+        [[ "$quiet" != "quiet" ]] && ok "Removed legacy self-signed certificate"
     fi
 
-    cat > "$NGINX_SITE_CONF" <<EOF
-# Generated by shareboxx-setup. Do not edit by hand — re-run shareboxx-setup
-# to regenerate, or your changes will be lost.
-server {
-    listen 3443 ssl http2 default_server;
-    listen [::]:3443 ssl http2;
-    server_name shareboxx.lan $AP_IP;
-
-    ssl_certificate     $CERT_PATH;
-    ssl_certificate_key $KEY_PATH;
-
-    # ── Large-upload friendliness ─────────────────────────────────────────
-    # ShareBoxx is meant for sharing big files; pick generous limits.
-    client_max_body_size 10G;
-
-    # ── Request-side timeouts (client → nginx) ────────────────────────────
-    # All of these are *inactivity* timeouts (gap between bytes), not
-    # total transfer time, so they're set high to cover very slow Wi-Fi
-    # clients on a busy AP.
-    client_header_timeout  60s;   # time to receive the full request line + headers
-    client_body_timeout    2h;    # max gap between body chunks
-    send_timeout           2h;    # max gap between writes back to the client
-    keepalive_timeout      75s;   # idle keep-alive — default, made explicit
-    lingering_timeout      30s;   # how long to drain a closing client
-    reset_timedout_connection on; # free resources on stuck connections
-
-    location / {
-        proxy_pass         http://127.0.0.1:3000;
-        proxy_redirect     off;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
-
-        # Stream the request body straight to the backend instead of
-        # buffering it to a temp file first. Avoids "the upload finished
-        # but the UI still says 50%" when nginx is slowly forwarding.
-        proxy_request_buffering off;
-        proxy_buffering         off;
-
-        # ── Upstream-side timeouts (nginx → actix backend) ────────────────
-        proxy_connect_timeout 60s;    # time to TCP-connect to 127.0.0.1:3000
-        proxy_send_timeout    2h;     # max gap while sending to backend
-        proxy_read_timeout    2h;     # max gap while reading from backend
-    }
-}
-EOF
-
-    # Verify the directive actually made it onto disk before continuing —
-    # catches weird filesystem / permission / write-protect cases.
-    if ! grep -q "client_max_body_size 10G" "$NGINX_SITE_CONF"; then
-        err "Wrote $NGINX_SITE_CONF but it does not contain the expected"
-        err "'client_max_body_size 10G' directive. Refusing to continue."
-        exit 1
+    # Reload nginx if it's installed and currently running, so it picks up
+    # the removal of our site config. Don't stop or disable nginx — the
+    # admin may be using it for other things.
+    if command -v nginx &>/dev/null && systemctl is-active --quiet nginx 2>/dev/null; then
+        if nginx -t &>/dev/null; then
+            systemctl reload nginx 2>/dev/null || true
+            [[ "$quiet" != "quiet" ]] && info "nginx reloaded (legacy ShareBoxx site removed)"
+        else
+            [[ "$quiet" != "quiet" ]] && warn "nginx config now fails to validate; check 'sudo nginx -t'"
+        fi
     fi
-
-    if [[ "$NGINX_SITE_CONF" == *sites-available* ]]; then
-        ln -sf "$NGINX_SITE_CONF" /etc/nginx/sites-enabled/shareboxx
-        rm -f /etc/nginx/sites-enabled/default
-    fi
-
-    if nginx -t 2>/dev/null; then
-        ok "nginx configuration valid"
-    else
-        err "nginx configuration test failed!"
-        nginx -t
-        exit 1
-    fi
-    systemctl enable nginx
-    ok "nginx configured at $NGINX_SITE_CONF (SSL reverse proxy on :3443, large-upload friendly)"
 }
 
 # Daily cleanup of orphaned multipart upload tempfiles.
@@ -782,7 +694,6 @@ start_services_and_check() {
     systemctl restart shareboxx-ap.service
     systemctl restart dnsmasq
     systemctl restart hostapd
-    systemctl restart nginx
     systemctl restart shareboxx
     # Cleanup timer is independent of the AP path; start so it begins
     # counting toward the next daily firing.
@@ -791,7 +702,7 @@ start_services_and_check() {
     sleep 2
     ALL_OK=1
     local svc
-    for svc in shareboxx-ap hostapd dnsmasq nginx shareboxx; do
+    for svc in shareboxx-ap hostapd dnsmasq shareboxx; do
         if systemctl is-active --quiet "$svc"; then
             ok "$svc is running"
         else
@@ -813,15 +724,14 @@ print_summary() {
         echo "  ShareBoxx is ready!"
         echo ""
         echo "  WiFi network:  $SSID  (open, no password)"
-        echo "  Web UI:        http://${AP_IP}:3000"
-        echo "  HTTPS:         https://${AP_IP}:3443"
-        echo "  Stats:         http://${AP_IP}:3000/stats"
+        echo "  Web UI:        http://shareboxx.lan/    (or http://${AP_IP}/)"
+        echo "  Stats:         http://shareboxx.lan/stats"
         echo ""
         echo "  Connect to '$SSID'. Any website will redirect to ShareBoxx."
         echo -e "${NC}"
     else
         warn "Some services failed to start. Check with:"
-        echo "  journalctl -u hostapd -u dnsmasq -u nginx -u shareboxx --no-pager -n 30"
+        echo "  journalctl -u hostapd -u dnsmasq -u shareboxx --no-pager -n 30"
     fi
 
     cat <<INFO
@@ -829,7 +739,6 @@ Configuration files:
   hostapd:   $HOSTAPD_CONF
   dnsmasq:   $DNSMASQ_CONF
   AP setup:  $AP_UNIT  (sets ${AP_IP}/24 on $IFACE)
-  nginx:     ${NGINX_SITE_CONF:-/etc/nginx/sites-available/shareboxx}
   cleanup:   $CLEANUP_TIMER  (daily, removes orphaned upload tempfiles)
   shareboxx: /etc/systemd/system/shareboxx.service
   files:     /var/lib/shareboxx/files/

@@ -6,10 +6,11 @@
 # WiFi access point running ShareBoxx. It sets up:
 #   - hostapd   (WiFi access point — open / passwordless by design)
 #   - dnsmasq   (DHCP + DNS captive portal)
-#   - dhcpcd    (static IP on the wireless interface)
-#   - iptables  (HTTP/HTTPS redirect to ShareBoxx)
-#   - nginx     (SSL termination with self-signed cert)
-#   - shareboxx (systemd service)
+#   - shareboxx-ap.service (synchronous static IP on the AP interface)
+#   - iptables  (HTTP redirect from :80 to ShareBoxx on :3000)
+#   - shareboxx (systemd service — serves HTTP directly on :3000)
+#
+# ShareBoxx is HTTP-only by design. See README "Why no HTTPS?".
 #
 # Run as root after installing the shareboxx .deb package:
 #   sudo shareboxx-setup            # configure or reconfigure
@@ -29,9 +30,9 @@ Without flags, runs the interactive access-point setup.
                     runtime packages). Used by the package's postinst hook.
   --uninstall       Revert the access-point configuration: remove dhcpcd
                     block, dnsmasq config, hostapd config, iptables rules,
-                    NetworkManager unmanage rule, and nginx site. Does not
-                    remove the package, the binary, the user, or files in
-                    /var/lib/shareboxx.
+                    NetworkManager unmanage rule, and any legacy nginx site.
+                    Does not remove the package, the binary, the user, or
+                    files in /var/lib/shareboxx.
   -h, --help        Show this help.
 USAGE
 }
@@ -106,7 +107,7 @@ else
     step "Installing system packages"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq dnsmasq hostapd nginx iw iproute2 \
+    apt-get install -y -qq dnsmasq hostapd iw iproute2 \
         netfilter-persistent iptables-persistent
     ok "Packages installed"
 fi
@@ -114,12 +115,16 @@ fi
 systemctl stop dnsmasq   2>/dev/null || true
 systemctl stop hostapd   2>/dev/null || true
 systemctl stop shareboxx 2>/dev/null || true
+# Stop nginx if it was previously serving the legacy HTTPS site, so it
+# releases port 3443; cleanup_legacy_https has already removed our site
+# config but a running nginx may still hold the port until reload.
+systemctl is-active --quiet nginx 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 
+cleanup_legacy_https
 configure_ap_interface
 configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect
-configure_nginx_ssl
 configure_cleanup_timer
 
 start_services_and_check

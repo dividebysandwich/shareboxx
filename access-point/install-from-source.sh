@@ -6,10 +6,11 @@
 #   - Installs the freshly built binary and frontend assets
 #   - Creates the shareboxx system user
 #   - Installs and enables the systemd service
-#   - Configures hostapd, dnsmasq, dhcpcd, iptables (captive portal)
-#   - Configures nginx with a self-signed certificate (HTTPS)
+#   - Configures hostapd, dnsmasq, iptables (captive portal)
+#   - Configures shareboxx-ap.service to set the static IP synchronously
 #
 # The WiFi network is open by design — ShareBoxx is meant to be passwordless.
+# ShareBoxx is HTTP-only by design — see README "Why no HTTPS?".
 #
 # Run AFTER `cargo leptos build --release`, from the repository root or from
 # the `access-point/` directory:
@@ -18,7 +19,7 @@
 #   sudo ./access-point/install-from-source.sh --uninstall # revert AP config
 #
 # Required commands (install via your distro's package manager first):
-#   hostapd, dnsmasq, dhcpcd, nginx, openssl, iw, iptables, rfkill, systemctl
+#   hostapd, dnsmasq, iw, iptables, ip (iproute2), rfkill, systemctl
 #
 set -euo pipefail
 
@@ -31,9 +32,10 @@ Usage: install-from-source.sh [--uninstall] [--help]
 Without flags, runs the full source install + interactive AP setup.
 
   --uninstall    Revert the access-point configuration (dhcpcd block, dnsmasq,
-                 hostapd, iptables rules, NetworkManager unmanage rule, nginx
-                 site). Does NOT remove the binary, the user, or files in
-                 /var/lib/shareboxx — for that, undo manually.
+                 hostapd, iptables rules, NetworkManager unmanage rule, and
+                 any legacy nginx site). Does NOT remove the binary, the
+                 user, or files in /var/lib/shareboxx — for that, undo
+                 manually.
   -h, --help     Show this help.
 USAGE
 }
@@ -78,7 +80,7 @@ fi
 
 step "Checking required commands"
 
-REQUIRED_CMDS=(hostapd dnsmasq nginx openssl iw ip iptables systemctl)
+REQUIRED_CMDS=(hostapd dnsmasq iw ip iptables systemctl)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
@@ -87,10 +89,10 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     err "Missing required commands: ${MISSING[*]}"
     cat <<HINT
 Install them with your distro's package manager, e.g.:
-  Arch:    pacman -S hostapd dnsmasq nginx openssl iw iproute2 iptables
-  Fedora:  dnf install hostapd dnsmasq nginx openssl iw iproute iptables iptables-services
-  openSUSE: zypper install hostapd dnsmasq nginx openssl iw iproute2 iptables
-  Debian:  apt install hostapd dnsmasq nginx openssl iw iproute2 iptables \\
+  Arch:    pacman -S hostapd dnsmasq iw iproute2 iptables
+  Fedora:  dnf install hostapd dnsmasq iw iproute iptables iptables-services
+  openSUSE: zypper install hostapd dnsmasq iw iproute2 iptables
+  Debian:  apt install hostapd dnsmasq iw iproute2 iptables \\
                        netfilter-persistent iptables-persistent
 HINT
     exit 1
@@ -170,12 +172,15 @@ ok "shareboxx.service installed and enabled"
 systemctl stop dnsmasq   2>/dev/null || true
 systemctl stop hostapd   2>/dev/null || true
 systemctl stop shareboxx 2>/dev/null || true
+# Reload nginx if it's serving the legacy HTTPS site (cleanup_legacy_https
+# already removed the site config, but a running nginx may still hold port).
+systemctl is-active --quiet nginx 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 
+cleanup_legacy_https
 configure_ap_interface
 configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect
-configure_nginx_ssl
 configure_cleanup_timer
 
 start_services_and_check
