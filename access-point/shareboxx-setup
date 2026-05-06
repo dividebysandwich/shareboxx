@@ -118,6 +118,7 @@ configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect
 configure_nginx_ssl
+configure_cleanup_timer
 
 start_services_and_check
 print_summary

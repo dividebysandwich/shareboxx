@@ -72,6 +72,10 @@ KEY_PATH="/etc/ssl/private/shareboxx-selfsigned.key"
 AP_UNIT="/etc/systemd/system/shareboxx-ap.service"
 DNSMASQ_DROPIN="/etc/systemd/system/dnsmasq.service.d/shareboxx.conf"
 HOSTAPD_DROPIN="/etc/systemd/system/hostapd.service.d/shareboxx.conf"
+CLEANUP_SERVICE="/etc/systemd/system/shareboxx-cleanup.service"
+CLEANUP_TIMER="/etc/systemd/system/shareboxx-cleanup.timer"
+SHAREBOXX_FILES_DIR="/var/lib/shareboxx/files"
+TEMPFILE_MAX_AGE_MINUTES="2880"  # 48h — generous enough not to kill long uploads
 
 # ── iptables persistence (distro-aware) ─────────────────────────────────────
 
@@ -116,6 +120,8 @@ do_uninstall() {
     info "Stopping services"
     systemctl stop shareboxx hostapd dnsmasq shareboxx-ap 2>/dev/null || true
     systemctl disable hostapd dnsmasq shareboxx-ap 2>/dev/null || true
+    systemctl stop shareboxx-cleanup.timer 2>/dev/null || true
+    systemctl disable shareboxx-cleanup.timer 2>/dev/null || true
 
     # Remove drop-ins BEFORE the AP unit so dnsmasq/hostapd don't end up
     # referencing a missing Requires= target between operations.
@@ -128,6 +134,10 @@ do_uninstall() {
     if [[ -f "$AP_UNIT" ]]; then
         rm -f "$AP_UNIT"
         ok "Removed $AP_UNIT"
+    fi
+    if [[ -f "$CLEANUP_TIMER" || -f "$CLEANUP_SERVICE" ]]; then
+        rm -f "$CLEANUP_TIMER" "$CLEANUP_SERVICE"
+        ok "Removed shareboxx-cleanup.{service,timer}"
     fi
     systemctl daemon-reload
 
@@ -627,10 +637,20 @@ server {
     ssl_certificate     $CERT_PATH;
     ssl_certificate_key $KEY_PATH;
 
-    # Large-upload friendliness — ShareBoxx is meant for sharing big files.
+    # ── Large-upload friendliness ─────────────────────────────────────────
+    # ShareBoxx is meant for sharing big files; pick generous limits.
     client_max_body_size 10G;
-    client_body_timeout 1h;
-    send_timeout 1h;
+
+    # ── Request-side timeouts (client → nginx) ────────────────────────────
+    # All of these are *inactivity* timeouts (gap between bytes), not
+    # total transfer time, so they're set high to cover very slow Wi-Fi
+    # clients on a busy AP.
+    client_header_timeout  60s;   # time to receive the full request line + headers
+    client_body_timeout    2h;    # max gap between body chunks
+    send_timeout           2h;    # max gap between writes back to the client
+    keepalive_timeout      75s;   # idle keep-alive — default, made explicit
+    lingering_timeout      30s;   # how long to drain a closing client
+    reset_timedout_connection on; # free resources on stuck connections
 
     location / {
         proxy_pass         http://127.0.0.1:3000;
@@ -648,10 +668,10 @@ server {
         proxy_request_buffering off;
         proxy_buffering         off;
 
-        # Big-upload timeouts for slow Wi-Fi clients.
-        proxy_read_timeout    1h;
-        proxy_send_timeout    1h;
-        proxy_connect_timeout 60s;
+        # ── Upstream-side timeouts (nginx → actix backend) ────────────────
+        proxy_connect_timeout 60s;    # time to TCP-connect to 127.0.0.1:3000
+        proxy_send_timeout    2h;     # max gap while sending to backend
+        proxy_read_timeout    2h;     # max gap while reading from backend
     }
 }
 EOF
@@ -680,6 +700,62 @@ EOF
     ok "nginx configured at $NGINX_SITE_CONF (SSL reverse proxy on :3443, large-upload friendly)"
 }
 
+# Daily cleanup of orphaned multipart upload tempfiles.
+#
+# actix-multipart's TempFile spools incoming multipart parts into the same
+# directory we serve from (so the final atomic rename is on the same fs).
+# When a client aborts mid-upload, the tempfile is left behind. They're
+# named ".tmpXXXXXX" so they don't show up in directory listings, but they
+# can fill the disk over time on a busy box. This installs a daily systemd
+# timer that deletes any such file older than $TEMPFILE_MAX_AGE_MINUTES.
+configure_cleanup_timer() {
+    step "Installing daily tempfile cleanup timer"
+
+    local find_bin
+    find_bin=$(command -v find)
+    if [[ -z "$find_bin" ]]; then
+        warn "'find' not found — skipping cleanup timer."
+        return
+    fi
+
+    cat > "$CLEANUP_SERVICE" <<EOF
+[Unit]
+Description=ShareBoxx tempfile cleanup
+Documentation=Removes orphaned actix-multipart upload tempfiles in $SHAREBOXX_FILES_DIR
+
+[Service]
+Type=oneshot
+User=shareboxx
+Group=shareboxx
+# -mmin +N matches files modified more than N minutes ago. The pattern
+# '.tmp*' matches the prefix that the tempfile crate uses by default;
+# user-uploaded files never start with a dot so this is safe.
+ExecStart=$find_bin $SHAREBOXX_FILES_DIR -maxdepth 1 -name '.tmp*' -type f -mmin +$TEMPFILE_MAX_AGE_MINUTES -delete
+# Don't fail the service if the directory is missing (e.g. before first upload).
+SuccessExitStatus=0 1
+EOF
+
+    cat > "$CLEANUP_TIMER" <<EOF
+[Unit]
+Description=Daily ShareBoxx tempfile cleanup
+
+[Timer]
+# Run every day. Persistent=true makes systemd run a missed firing on the
+# next boot, so a Pi that's powered off overnight still gets cleaned up.
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10m
+Unit=shareboxx-cleanup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable shareboxx-cleanup.timer
+    ok "shareboxx-cleanup.timer installed (daily, deletes orphaned .tmp* files older than ${TEMPFILE_MAX_AGE_MINUTES}m)"
+}
+
 # Sets: ALL_OK
 start_services_and_check() {
     step "Starting services"
@@ -691,6 +767,9 @@ start_services_and_check() {
     systemctl restart hostapd
     systemctl restart nginx
     systemctl restart shareboxx
+    # Cleanup timer is independent of the AP path; start so it begins
+    # counting toward the next daily firing.
+    systemctl restart shareboxx-cleanup.timer 2>/dev/null || true
 
     sleep 2
     ALL_OK=1
@@ -703,6 +782,9 @@ start_services_and_check() {
             ALL_OK=0
         fi
     done
+    if systemctl is-active --quiet shareboxx-cleanup.timer; then
+        ok "shareboxx-cleanup.timer is armed"
+    fi
 }
 
 # Reads: ALL_OK, SSID, AP_IP, NGINX_SITE_CONF, DHCPCD_CONF, DNSMASQ_CONF, HOSTAPD_CONF
@@ -731,6 +813,7 @@ Configuration files:
   dnsmasq:   $DNSMASQ_CONF
   AP setup:  $AP_UNIT  (sets ${AP_IP}/24 on $IFACE)
   nginx:     ${NGINX_SITE_CONF:-/etc/nginx/sites-available/shareboxx}
+  cleanup:   $CLEANUP_TIMER  (daily, removes orphaned upload tempfiles)
   shareboxx: /etc/systemd/system/shareboxx.service
   files:     /var/lib/shareboxx/files/
 
