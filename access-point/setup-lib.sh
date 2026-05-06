@@ -92,10 +92,15 @@ persist_iptables() {
 
 remove_iptables_rules() {
     # Delete every rule whose comment starts with "shareboxx-".
+    #
+    # NOTE: the trailing `|| true` is essential under `set -euo pipefail`.
+    # When grep finds no matches it exits 1, and pipefail then makes the
+    # whole pipeline fail, which (combined with set -e) would silently
+    # abort the script. That bit us once already — don't remove it.
     local table rule
     for table in nat filter; do
         while :; do
-            rule=$(iptables -t "$table" -S 2>/dev/null | grep -F 'shareboxx-' | head -1)
+            rule=$(iptables -t "$table" -S 2>/dev/null | grep -F 'shareboxx-' | head -1) || true
             [[ -z "$rule" ]] && break
             # shellcheck disable=SC2086
             iptables -t "$table" $(echo "$rule" | sed 's/^-A/-D/') 2>/dev/null || break
