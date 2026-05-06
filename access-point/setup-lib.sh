@@ -25,6 +25,23 @@ warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
 err()   { echo -e "${RED}[error]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}── $* ──${NC}"; }
 
+# Print the ShareBoxx ASCII banner. Single-quoted heredoc so the backslashes
+# in the figlet output are preserved verbatim (no escape interpretation).
+print_logo() {
+    echo ""
+    echo -e "${CYAN}${BOLD}"
+    cat <<'LOGO'
+ ____  _                      ____
+/ ___|| |__   __ _ _ __ ___  | __ )  _____  ___  __
+\___ \| '_ \ / _` | '__/ _ \ |  _ \ / _ \ \/ /\ \/ /
+ ___) | | | | (_| | | |  __/ | |_) | (_) >  <  >  <
+|____/|_| |_|\__,_|_|  \___| |____/ \___/_/\_\/_/\_\
+LOGO
+    echo -e "${NC}"
+    echo -e "      ${BOLD}Anonymous offline file sharing over WiFi${NC}"
+    echo ""
+}
+
 ask() {
     # The prompt MUST go to stderr — `ask` is invoked via command substitution
     # (`VAR=$(ask ...)`), which captures stdout. If the prompt were on stdout

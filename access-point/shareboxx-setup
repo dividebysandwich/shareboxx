@@ -69,6 +69,8 @@ if [[ "$SETUP_LIB_LOADED" -ne 1 ]]; then
     exit 1
 fi
 
+print_logo
+
 # ── Preflight ───────────────────────────────────────────────────────────────
 
 if [[ $EUID -ne 0 ]]; then

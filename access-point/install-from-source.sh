@@ -59,6 +59,8 @@ fi
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/setup-lib.sh"
 
+print_logo
+
 # ── Preflight ───────────────────────────────────────────────────────────────
 
 if [[ $EUID -ne 0 ]]; then
