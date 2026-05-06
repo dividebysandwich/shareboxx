@@ -6,8 +6,6 @@ use leptos::config::LeptosOptions;
 use leptos_meta::*;
 use leptos_router::*;
 use leptos_router::components::{Router, Route, Routes};
-#[cfg(feature = "ssr")]
-use ammonia::clean;
 
 /// Helper to create a ServerFnError with the default NoCustomError type parameter.
 #[cfg(feature = "ssr")]
@@ -312,6 +310,11 @@ fn HomePage() -> impl IntoView {
             }
         });
     }
+    #[cfg(feature = "ssr")]
+    {
+        // These writers are only driven from the SSE stream on the client.
+        let _ = (set_user_count, set_chat_version);
+    }
 
     view! {
         <div class="app">
@@ -591,6 +594,13 @@ pub fn FileUploadComponent(
             xhr.send_with_opt_form_data(Some(&form_data)).unwrap();
         }
     };
+
+    #[cfg(feature = "ssr")]
+    {
+        // The upload XHR (and its progress/path/refresh wiring) only runs
+        // on the client; reference the inputs so the SSR build stays clean.
+        let _ = (path, set_file_list_version, set_progress);
+    }
 
     view! {
         <div class="card upload-card">
@@ -967,6 +977,7 @@ pub fn ChatComponent(
                                     }
                                     #[cfg(feature = "ssr")]
                                     {
+                                        let _ = timestamp;
                                         String::new()
                                     }
                                 };
