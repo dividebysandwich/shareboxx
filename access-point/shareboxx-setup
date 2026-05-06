@@ -33,20 +33,26 @@ Without flags, runs the interactive access-point setup.
                     NetworkManager unmanage rule, and any legacy nginx site.
                     Does not remove the package, the binary, the user, or
                     files in /var/lib/shareboxx.
+  --keep-config     Re-run setup without resetting the admin password or file
+                    expiration settings. Skips the password / expiration
+                    prompts if /var/lib/shareboxx/config.json already exists.
   -h, --help        Show this help.
 USAGE
 }
 
 FROM_POSTINST=0
 DO_UNINSTALL=0
+KEEP_CONFIG=0
 for arg in "$@"; do
     case "$arg" in
         --from-postinst) FROM_POSTINST=1 ;;
         --uninstall)     DO_UNINSTALL=1 ;;
+        --keep-config)   KEEP_CONFIG=1 ;;
         -h|--help)       usage; exit 0 ;;
         *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
+export KEEP_CONFIG
 
 # ── Source shared library ───────────────────────────────────────────────────
 
@@ -98,6 +104,7 @@ select_iface
 check_ap_capability "$IFACE"
 check_service_conflicts "$IFACE"
 prompt_config
+prompt_admin_config
 
 # Install runtime packages (deb-specific). When invoked from postinst the
 # .deb's Depends has already pulled them in.
@@ -126,6 +133,7 @@ configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect
 configure_cleanup_timer
+write_config_json
 
 start_services_and_check
 print_summary

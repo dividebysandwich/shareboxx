@@ -1,6 +1,6 @@
 [package]
 name = "shareboxx"
-version = "1.0.3"
+version = "1.1.0"
 edition = "2024"
 
 [lib]
@@ -36,10 +36,16 @@ web-sys = { version = "0.3", optional = true, features = [
     "FormData",
     "HtmlInputElement",
     "ProgressEvent",
+    "Storage",
+    "Window",
     "XmlHttpRequest",
     "XmlHttpRequestUpload",
 ] }
 simple_logger = "5.2.0"
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+sha2 = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
+hex = { version = "0.4", optional = true }
 
 [features]
 csr = ["leptos/csr", "dep:js-sys", "dep:web-sys"]
@@ -54,6 +60,10 @@ ssr = [
   "leptos_meta/ssr",
   "leptos_router/ssr",
   "dep:tokio",
+  "dep:rusqlite",
+  "dep:sha2",
+  "dep:rand",
+  "dep:hex",
 ]
 
 # Defines a size-optimized profile for the WASM bundle in release mode

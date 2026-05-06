@@ -89,7 +89,9 @@ DNSMASQ_DROPIN="/etc/systemd/system/dnsmasq.service.d/shareboxx.conf"
 HOSTAPD_DROPIN="/etc/systemd/system/hostapd.service.d/shareboxx.conf"
 CLEANUP_SERVICE="/etc/systemd/system/shareboxx-cleanup.service"
 CLEANUP_TIMER="/etc/systemd/system/shareboxx-cleanup.timer"
-SHAREBOXX_FILES_DIR="/var/lib/shareboxx/files"
+SHAREBOXX_HOME="/var/lib/shareboxx"
+SHAREBOXX_FILES_DIR="$SHAREBOXX_HOME/files"
+SHAREBOXX_CONFIG_FILE="$SHAREBOXX_HOME/config.json"
 TEMPFILE_MAX_AGE_MINUTES="2880"  # 48h — generous enough not to kill long uploads
 
 # Legacy HTTPS paths — only referenced by cleanup_legacy_https() below for
@@ -426,6 +428,129 @@ prompt_config() {
     confirm "Proceed with setup?" y || { info "Aborted."; exit 0; }
 }
 
+# ── Admin / expiration prompts ──────────────────────────────────────────────
+# Sets: EXPIRATION_ENABLED ("true"/"false"), EXPIRATION_DAYS,
+#       ADMIN_HASH (hex sha256), ADMIN_SALT (hex)
+#
+# Honours $KEEP_CONFIG=1 — when set and a config.json already exists, we
+# leave the existing values in place and skip the prompts entirely. This is
+# what `--keep-config` on the entry-point scripts wires up.
+
+prompt_admin_config() {
+    step "Admin password & file expiration"
+
+    if [[ "${KEEP_CONFIG:-0}" -eq 1 && -f "$SHAREBOXX_CONFIG_FILE" ]]; then
+        info "Keeping existing $SHAREBOXX_CONFIG_FILE — admin password and"
+        info "expiration settings unchanged. Pass without --keep-config to reset."
+        EXPIRATION_ENABLED=""
+        EXPIRATION_DAYS=""
+        ADMIN_HASH=""
+        ADMIN_SALT=""
+        return
+    fi
+
+    # Expiration toggle.
+    if confirm "Enable automatic deletion of uploaded files after N days?" n; then
+        EXPIRATION_ENABLED="true"
+        while true; do
+            EXPIRATION_DAYS=$(ask "File timeout in days (1-3650)" "30")
+            if [[ "$EXPIRATION_DAYS" =~ ^[0-9]+$ ]] \
+               && (( EXPIRATION_DAYS >= 1 && EXPIRATION_DAYS <= 3650 )); then
+                break
+            fi
+            echo "  Must be an integer between 1 and 3650."
+        done
+    else
+        EXPIRATION_ENABLED="false"
+        EXPIRATION_DAYS="30"
+    fi
+
+    # Admin password (twice). Echo suppressed.
+    local pw1 pw2
+    while true; do
+        echo -en "${BOLD}Admin password${NC}: " >&2
+        read -rs pw1; echo >&2
+        if [[ -z "$pw1" ]]; then
+            echo "  Password cannot be empty." >&2
+            continue
+        fi
+        echo -en "${BOLD}Confirm admin password${NC}: " >&2
+        read -rs pw2; echo >&2
+        if [[ "$pw1" != "$pw2" ]]; then
+            echo "  Passwords do not match." >&2
+            continue
+        fi
+        break
+    done
+
+    # Generate a 16-byte hex salt and compute sha256(salt_bytes || password).
+    # We avoid putting the password on a command line by piping it into
+    # sha256sum on stdin alongside the (binary-decoded) salt.
+    if ! command -v sha256sum &>/dev/null; then
+        err "sha256sum not found — required to set the admin password."
+        exit 1
+    fi
+    if ! command -v xxd &>/dev/null; then
+        err "xxd not found — required to set the admin password (install via the 'xxd' or 'vim-common' package)."
+        exit 1
+    fi
+    ADMIN_SALT=$(head -c 16 /dev/urandom | xxd -p -c 256)
+    # Concatenate salt bytes + password bytes, hash, take first column.
+    ADMIN_HASH=$(
+        { printf '%s' "$ADMIN_SALT" | xxd -r -p; printf '%s' "$pw1"; } \
+            | sha256sum | awk '{print $1}'
+    )
+    unset pw1 pw2
+
+    if [[ -z "$ADMIN_HASH" || ${#ADMIN_HASH} -ne 64 ]]; then
+        err "Failed to compute password hash."
+        exit 1
+    fi
+
+    echo ""
+    if [[ "$EXPIRATION_ENABLED" == "true" ]]; then
+        info "File expiration: ENABLED (timeout $EXPIRATION_DAYS days)"
+    else
+        info "File expiration: DISABLED"
+    fi
+    info "Admin password: set"
+}
+
+# Writes $SHAREBOXX_CONFIG_FILE if not skipping.
+# Owns the file as shareboxx:shareboxx mode 0640. Caller must ensure the
+# shareboxx user/group already exist.
+write_config_json() {
+    if [[ -z "${ADMIN_HASH:-}" ]]; then
+        # KEEP_CONFIG path — nothing to write.
+        return
+    fi
+
+    step "Writing $SHAREBOXX_CONFIG_FILE"
+
+    install -d -m 755 "$SHAREBOXX_HOME"
+
+    local enabled
+    if [[ "$EXPIRATION_ENABLED" == "true" ]]; then enabled="true"; else enabled="false"; fi
+
+    # Use a heredoc so we don't shell-out to jq or python.
+    cat > "$SHAREBOXX_CONFIG_FILE" <<JSON
+{
+  "expiration_enabled": $enabled,
+  "expiration_days": $EXPIRATION_DAYS,
+  "admin_password_hash": "$ADMIN_HASH",
+  "admin_salt": "$ADMIN_SALT"
+}
+JSON
+
+    # Ownership: only set if the shareboxx user exists yet (postinst/source
+    # installer both create it before invoking us).
+    if getent passwd shareboxx >/dev/null 2>&1; then
+        chown shareboxx:shareboxx "$SHAREBOXX_CONFIG_FILE"
+    fi
+    chmod 0640 "$SHAREBOXX_CONFIG_FILE"
+    ok "Wrote $SHAREBOXX_CONFIG_FILE"
+}
+
 # ── Service configuration ───────────────────────────────────────────────────
 
 configure_ap_interface() {
@@ -741,6 +866,8 @@ Configuration files:
   AP setup:  $AP_UNIT  (sets ${AP_IP}/24 on $IFACE)
   cleanup:   $CLEANUP_TIMER  (daily, removes orphaned upload tempfiles)
   shareboxx: /etc/systemd/system/shareboxx.service
+  config:    $SHAREBOXX_CONFIG_FILE  (admin password hash + expiration settings)
+  uploads db: $SHAREBOXX_HOME/uploads.db  (created on first upload)
   files:     /var/lib/shareboxx/files/
 
 Using a USB stick for storage:

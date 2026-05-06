@@ -36,18 +36,24 @@ Without flags, runs the full source install + interactive AP setup.
                  any legacy nginx site). Does NOT remove the binary, the
                  user, or files in /var/lib/shareboxx — for that, undo
                  manually.
+  --keep-config  Re-run setup without resetting the admin password or file
+                 expiration settings. Skips the password / expiration prompts
+                 if /var/lib/shareboxx/config.json already exists.
   -h, --help     Show this help.
 USAGE
 }
 
 DO_UNINSTALL=0
+KEEP_CONFIG=0
 for arg in "$@"; do
     case "$arg" in
         --uninstall) DO_UNINSTALL=1 ;;
+        --keep-config) KEEP_CONFIG=1 ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
+export KEEP_CONFIG
 
 # ── Source shared library ───────────────────────────────────────────────────
 
@@ -124,6 +130,7 @@ select_iface
 check_ap_capability "$IFACE"
 check_service_conflicts "$IFACE"
 prompt_config
+prompt_admin_config
 
 # Install binary + assets + user + systemd service (source-specific).
 step "Installing binary and frontend assets"
@@ -182,6 +189,7 @@ configure_dnsmasq
 configure_hostapd
 configure_iptables_redirect
 configure_cleanup_timer
+write_config_json
 
 start_services_and_check
 print_summary

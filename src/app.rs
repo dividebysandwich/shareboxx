@@ -256,6 +256,7 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=HomePage>
                     <Route path=path!("") view=HomePage/>
                     <Route path=path!("stats") view=StatsPage/>
+                    <Route path=path!("admin") view=AdminPage/>
                     <Route path=path!("/*any") view=NotFound/>
                 </Routes>
             </main>
@@ -323,6 +324,7 @@ fn HomePage() -> impl IntoView {
                         " online"
                     </div>
                     <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                    <a href="/admin" rel="external" class="header-link">"Admin"</a>
                 </div>
             </header>
 
@@ -1084,6 +1086,661 @@ fn StatsPage() -> impl IntoView {
             </div>
         </div>
     }.into_any()
+}
+
+// ── Admin mode ──────────────────────────────────────────────────────────────
+
+#[cfg(feature = "ssr")]
+fn require_admin(token: &str) -> Result<(), ServerFnError> {
+    if !crate::admin_session::validate(token) {
+        return Err(sfn_err("unauthorized"));
+    }
+    Ok(())
+}
+
+#[server]
+pub async fn admin_status() -> Result<bool, ServerFnError> {
+    let cfg = crate::config::load();
+    Ok(cfg.is_admin_configured())
+}
+
+#[server]
+pub async fn admin_login(password: String) -> Result<String, ServerFnError> {
+    let cfg = crate::config::load();
+    if !cfg.is_admin_configured() {
+        return Err(sfn_err("admin not configured"));
+    }
+    if !cfg.verify_password(&password) {
+        return Err(sfn_err("invalid password"));
+    }
+    Ok(crate::admin_session::create_token())
+}
+
+#[server]
+pub async fn admin_logout(token: String) -> Result<(), ServerFnError> {
+    crate::admin_session::revoke(&token);
+    Ok(())
+}
+
+#[server]
+pub async fn admin_check(token: String) -> Result<bool, ServerFnError> {
+    Ok(crate::admin_session::validate(&token))
+}
+
+/// (id, rel_path, uploaded_at_secs, expires_at_secs_opt)
+#[server]
+pub async fn admin_list_expiring(
+    token: String,
+) -> Result<(bool, u32, Vec<(i64, String, u64, Option<u64>)>), ServerFnError> {
+    require_admin(&token)?;
+    let cfg = crate::config::load();
+    let conn = crate::db::open()
+        .map_err(|e| sfn_err(format!("db error: {}", e)))?;
+    let rows = crate::db::list_tracked(&conn)
+        .map_err(|e| sfn_err(format!("db error: {}", e)))?;
+    let secs_per_day: u64 = 86_400;
+    let max_age = (cfg.expiration_days as u64).saturating_mul(secs_per_day);
+    let out = rows
+        .into_iter()
+        .map(|(id, rel_path, uploaded_at)| {
+            let expires_at = if cfg.expiration_enabled {
+                Some(uploaded_at.saturating_add(max_age))
+            } else {
+                None
+            };
+            (id, rel_path, uploaded_at, expires_at)
+        })
+        .collect();
+    Ok((cfg.expiration_enabled, cfg.expiration_days, out))
+}
+
+#[server]
+pub async fn admin_approve(token: String, id: i64) -> Result<(), ServerFnError> {
+    require_admin(&token)?;
+    let conn = crate::db::open()
+        .map_err(|e| sfn_err(format!("db error: {}", e)))?;
+    crate::db::delete_by_id(&conn, id)
+        .map_err(|e| sfn_err(format!("db error: {}", e)))?;
+    Ok(())
+}
+
+#[server]
+pub async fn admin_move_file(
+    token: String,
+    src_rel: String,
+    dst_dir_rel: String,
+) -> Result<(), ServerFnError> {
+    require_admin(&token)?;
+    let base_path = std::env::current_dir()
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
+    let base = base_path.join("files");
+
+    let src_canon = resolve_safe_path(&base, &src_rel)?;
+    if src_canon.is_dir() {
+        return Err(sfn_err("source is a directory"));
+    }
+    let dst_dir_canon = resolve_safe_path(&base, &dst_dir_rel)?;
+    if !dst_dir_canon.is_dir() {
+        return Err(sfn_err("destination is not a directory"));
+    }
+    let file_name = src_canon
+        .file_name()
+        .ok_or_else(|| sfn_err("invalid source"))?
+        .to_owned();
+    let dst_canon = dst_dir_canon.join(&file_name);
+    if dst_canon.exists() {
+        return Err(sfn_err("a file with that name already exists at the destination"));
+    }
+    std::fs::rename(&src_canon, &dst_canon)
+        .map_err(|e| sfn_err(format!("rename failed: {}", e)))?;
+
+    // Compute the new rel_path (relative to ./files/) and update DB if a row
+    // exists for the old path.
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| sfn_err(format!("base canonicalize: {}", e)))?;
+    let new_rel = dst_canon
+        .strip_prefix(&canonical_base)
+        .map_err(|_| sfn_err("path escape"))?
+        .to_string_lossy()
+        .to_string();
+    let old_rel = src_canon
+        .strip_prefix(&canonical_base)
+        .map_err(|_| sfn_err("path escape"))?
+        .to_string_lossy()
+        .to_string();
+    if let Ok(conn) = crate::db::open() {
+        let _ = crate::db::update_path(&conn, &old_rel, &new_rel);
+    }
+    Ok(())
+}
+
+#[server]
+pub async fn admin_delete_file(token: String, rel_path: String) -> Result<(), ServerFnError> {
+    require_admin(&token)?;
+    let base_path = std::env::current_dir()
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
+    let base = base_path.join("files");
+    let target = resolve_safe_path(&base, &rel_path)?;
+    if target.is_dir() {
+        return Err(sfn_err("target is a directory"));
+    }
+    std::fs::remove_file(&target)
+        .map_err(|e| sfn_err(format!("delete failed: {}", e)))?;
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| sfn_err(format!("base canonicalize: {}", e)))?;
+    let rel = target
+        .strip_prefix(&canonical_base)
+        .map_err(|_| sfn_err("path escape"))?
+        .to_string_lossy()
+        .to_string();
+    if let Ok(conn) = crate::db::open() {
+        let _ = crate::db::delete_by_path(&conn, &rel);
+    }
+    Ok(())
+}
+
+#[server]
+pub async fn admin_delete_directory(token: String, rel_path: String) -> Result<(), ServerFnError> {
+    require_admin(&token)?;
+    let base_path = std::env::current_dir()
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
+    let base = base_path.join("files");
+    let target = resolve_safe_path(&base, &rel_path)?;
+    if !target.is_dir() {
+        return Err(sfn_err("target is not a directory"));
+    }
+    // Refuse to remove the share root.
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| sfn_err(format!("base canonicalize: {}", e)))?;
+    if target == canonical_base {
+        return Err(sfn_err("cannot delete the share root"));
+    }
+    // Refuse if non-empty.
+    let mut entries = std::fs::read_dir(&target)
+        .map_err(|e| sfn_err(format!("read_dir failed: {}", e)))?;
+    if entries.next().is_some() {
+        return Err(sfn_err("directory is not empty"));
+    }
+    std::fs::remove_dir(&target)
+        .map_err(|e| sfn_err(format!("delete failed: {}", e)))?;
+    Ok(())
+}
+
+#[component]
+fn AdminPage() -> impl IntoView {
+    let (token, set_token) = signal::<Option<String>>(None);
+    let (login_error, set_login_error) = signal(String::new());
+    let (action_msg, set_action_msg) = signal(String::new());
+    let password_ref: NodeRef<Input> = NodeRef::new();
+    let admin_status = Resource::new(|| (), |_| admin_status());
+
+    // Restore token from localStorage on mount and validate it.
+    #[cfg(not(feature = "ssr"))]
+    {
+        Effect::new(move |prev: Option<bool>| {
+            if prev.unwrap_or(false) {
+                return true;
+            }
+            if let Some(window) = web_sys::window() {
+                if let Ok(Some(storage)) = window.local_storage() {
+                    if let Ok(Some(t)) = storage.get_item("shareboxx_admin_token") {
+                        if !t.is_empty() {
+                            spawn_local(async move {
+                                match admin_check(t.clone()).await {
+                                    Ok(true) => set_token.set(Some(t)),
+                                    _ => {
+                                        if let Some(window) = web_sys::window() {
+                                            if let Ok(Some(storage)) = window.local_storage() {
+                                                let _ = storage.remove_item("shareboxx_admin_token");
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            true
+        });
+    }
+
+    let on_login = move |_| {
+        let pw = password_ref
+            .get()
+            .map(|i| i.value())
+            .unwrap_or_default();
+        if pw.is_empty() {
+            set_login_error.set("Please enter the password.".to_string());
+            return;
+        }
+        set_login_error.set(String::new());
+        spawn_local(async move {
+            match admin_login(pw).await {
+                Ok(t) => {
+                    #[cfg(not(feature = "ssr"))]
+                    {
+                        if let Some(window) = web_sys::window() {
+                            if let Ok(Some(storage)) = window.local_storage() {
+                                let _ = storage.set_item("shareboxx_admin_token", &t);
+                            }
+                        }
+                    }
+                    set_token.set(Some(t));
+                }
+                Err(e) => set_login_error.set(format!("Login failed: {}", e)),
+            }
+        });
+    };
+
+    let on_logout = move |_| {
+        if let Some(t) = token.get_untracked() {
+            spawn_local(async move {
+                let _ = admin_logout(t).await;
+            });
+        }
+        #[cfg(not(feature = "ssr"))]
+        {
+            if let Some(window) = web_sys::window() {
+                if let Ok(Some(storage)) = window.local_storage() {
+                    let _ = storage.remove_item("shareboxx_admin_token");
+                }
+            }
+        }
+        set_token.set(None);
+    };
+
+    view! {
+        <div class="app">
+            <header class="app-header">
+                <a href="/" rel="external" class="logo">"ShareBoxx"</a>
+                <div class="header-right">
+                    <a href="/" rel="external" class="header-link">"Home"</a>
+                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                    <Show when=move || token.get().is_some() fallback=|| ()>
+                        <button class="header-link header-button" type="button" on:click=on_logout>"Log out"</button>
+                    </Show>
+                </div>
+            </header>
+
+            <div class="admin-page">
+                <h2 class="admin-title">"Admin"</h2>
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
+                {move || {
+                    let configured = admin_status.get().and_then(|r| r.ok()).unwrap_or(false);
+                    if !configured {
+                        view! {
+                            <div class="card">
+                                <div class="card-body">
+                                    <p>"Admin mode is not configured on this ShareBoxx."</p>
+                                    <p class="text-muted">"Run "<code>"sudo shareboxx-setup"</code>" (or the source installer) to set an admin password."</p>
+                                </div>
+                            </div>
+                        }.into_any()
+                    } else if token.get().is_none() {
+                        view! {
+                            <div class="card admin-login-card">
+                                <div class="card-header"><h2>"Sign in"</h2></div>
+                                <div class="card-body">
+                                    <div class="admin-login-row">
+                                        <input type="password" placeholder="Admin password"
+                                            class="admin-password-input"
+                                            node_ref=password_ref
+                                            on:keydown=move |ev| {
+                                                if ev.key() == "Enter" {
+                                                    on_login(());
+                                                }
+                                            }
+                                        />
+                                        <button class="btn-primary" type="button" on:click=move |_| on_login(())>"Sign in"</button>
+                                    </div>
+                                    <Show when=move || !login_error.get().is_empty() fallback=|| ()>
+                                        <div class="upload-error">{move || login_error.get()}</div>
+                                    </Show>
+                                </div>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <AdminPanel token=token set_token=set_token action_msg=action_msg set_action_msg=set_action_msg/>
+                        }.into_any()
+                    }
+                }}
+                </Suspense>
+            </div>
+        </div>
+    }.into_any()
+}
+
+#[component]
+fn AdminPanel(
+    token: ReadSignal<Option<String>>,
+    set_token: WriteSignal<Option<String>>,
+    action_msg: ReadSignal<String>,
+    set_action_msg: WriteSignal<String>,
+) -> impl IntoView {
+    let (data_version, set_data_version) = signal(0u32);
+    let (browser_path, set_browser_path) = signal(String::new());
+    let (browser_version, set_browser_version) = signal(0u32);
+    let folder_input_ref: NodeRef<Input> = NodeRef::new();
+    let (folder_name, set_folder_name) = signal(String::new());
+
+    let expiring = Resource::new(
+        move || (data_version.get(), token.get()),
+        |(_, t)| async move {
+            match t {
+                Some(t) => admin_list_expiring(t).await,
+                None => Err(ServerFnError::ServerError("no token".to_string())),
+            }
+        },
+    );
+
+    let listing = Resource::new(
+        move || (browser_path.get(), browser_version.get()),
+        |(p, _)| get_file_list(p),
+    );
+
+    let approve = move |id: i64| {
+        let Some(t) = token.get_untracked() else { return };
+        spawn_local(async move {
+            match admin_approve(t, id).await {
+                Ok(_) => {
+                    set_action_msg.set("Approved (file will not expire).".to_string());
+                    set_data_version.update(|v| *v += 1);
+                }
+                Err(e) => {
+                    if e.to_string().contains("unauthorized") {
+                        set_token.set(None);
+                    } else {
+                        set_action_msg.set(format!("Error: {}", e));
+                    }
+                }
+            }
+        });
+    };
+
+    let create_folder = move |_| {
+        let name = folder_name.get_untracked();
+        let p = browser_path.get_untracked();
+        if name.is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            match create_directory(p, name).await {
+                Ok(_) => {
+                    set_action_msg.set("Folder created.".to_string());
+                    set_browser_version.update(|v| *v += 1);
+                }
+                Err(e) => set_action_msg.set(format!("Error: {}", e)),
+            }
+        });
+        if let Some(input) = folder_input_ref.get() {
+            input.set_value("");
+        }
+        set_folder_name.set(String::new());
+    };
+
+    let delete_file = move |rel: String| {
+        let Some(t) = token.get_untracked() else { return };
+        #[cfg(not(feature = "ssr"))]
+        {
+            let confirmed = web_sys::window()
+                .and_then(|w| w.confirm_with_message(&format!("Delete file '{}'?", rel)).ok())
+                .unwrap_or(false);
+            if !confirmed { return; }
+        }
+        let _ = &rel;
+        spawn_local(async move {
+            match admin_delete_file(t, rel).await {
+                Ok(_) => {
+                    set_action_msg.set("File deleted.".to_string());
+                    set_browser_version.update(|v| *v += 1);
+                    set_data_version.update(|v| *v += 1);
+                }
+                Err(e) => set_action_msg.set(format!("Error: {}", e)),
+            }
+        });
+    };
+
+    let delete_dir = move |rel: String| {
+        let Some(t) = token.get_untracked() else { return };
+        #[cfg(not(feature = "ssr"))]
+        {
+            let confirmed = web_sys::window()
+                .and_then(|w| w.confirm_with_message(&format!("Delete directory '{}'? It must be empty.", rel)).ok())
+                .unwrap_or(false);
+            if !confirmed { return; }
+        }
+        spawn_local(async move {
+            match admin_delete_directory(t, rel).await {
+                Ok(_) => {
+                    set_action_msg.set("Directory deleted.".to_string());
+                    set_browser_version.update(|v| *v += 1);
+                }
+                Err(e) => set_action_msg.set(format!("Error: {}", e)),
+            }
+        });
+    };
+
+    let move_file = move |rel: String| {
+        let Some(t) = token.get_untracked() else { return };
+        #[cfg(not(feature = "ssr"))]
+        {
+            let dst = web_sys::window()
+                .and_then(|w| w.prompt_with_message_and_default(
+                    "Move into which directory? (relative to /files, e.g. 'archive/' — empty for root)",
+                    "",
+                ).ok())
+                .flatten();
+            let Some(mut dst) = dst else { return };
+            if !dst.is_empty() && !dst.ends_with('/') {
+                dst.push('/');
+            }
+            let dst_clone = dst.clone();
+            spawn_local(async move {
+                match admin_move_file(t, rel, dst_clone).await {
+                    Ok(_) => {
+                        set_action_msg.set("File moved.".to_string());
+                        set_browser_version.update(|v| *v += 1);
+                        set_data_version.update(|v| *v += 1);
+                    }
+                    Err(e) => set_action_msg.set(format!("Error: {}", e)),
+                }
+            });
+        }
+        #[cfg(feature = "ssr")]
+        {
+            let _ = (rel, t);
+        }
+    };
+
+    view! {
+        <Show when=move || !action_msg.get().is_empty() fallback=|| ()>
+            <div class="admin-action-msg">{move || action_msg.get()}</div>
+        </Show>
+
+        <div class="card">
+            <div class="card-header"><h2>"Tracked uploads"</h2></div>
+            <div class="card-body">
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
+                {move || expiring.get().map(|res| match res {
+                    Ok((enabled, days, items)) => {
+                        let header = if enabled {
+                            format!("Expiration is ON — files older than {} days will be deleted.", days)
+                        } else {
+                            "Expiration is OFF — these files are tracked but will not be deleted.".to_string()
+                        };
+                        let has_items = !items.is_empty();
+                        view! {
+                            <p class="text-muted">{header}</p>
+                            {if has_items {
+                                Some(view! {
+                                    <table class="admin-table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Path"</th>
+                                                <th>"Uploaded"</th>
+                                                <th>"Expires"</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {items.into_iter().map(|(id, path, uploaded, expires)| {
+                                                let upl = format_epoch(uploaded);
+                                                let exp = expires.map(format_epoch).unwrap_or_else(|| "—".to_string());
+                                                let path_clone = path.clone();
+                                                view! {
+                                                    <tr>
+                                                        <td class="admin-path">{path_clone}</td>
+                                                        <td>{upl}</td>
+                                                        <td>{exp}</td>
+                                                        <td><button class="btn-secondary" type="button"
+                                                            on:click=move |_| approve(id)
+                                                        >"Approve"</button></td>
+                                                    </tr>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </tbody>
+                                    </table>
+                                })
+                            } else {
+                                None
+                            }}
+                            {if !has_items {
+                                Some(view! { <p class="text-muted">"No tracked uploads yet."</p> })
+                            } else { None }}
+                        }.into_any()
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("unauthorized") {
+                            set_token.set(None);
+                        }
+                        view! { <p>"Error: " {e.to_string()}</p> }.into_any()
+                    }
+                })}
+                </Suspense>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><h2>"File browser"</h2></div>
+            <div class="card-body">
+                <div class="current-dir">
+                    {move || {
+                        let p = browser_path.get();
+                        if p.is_empty() { "/".to_string() } else { format!("/{}", p) }
+                    }}
+                </div>
+                <div class="new-folder-row">
+                    <input type="text" class="new-folder-input" placeholder="New folder name..."
+                        node_ref=folder_input_ref
+                        on:input=move |_| {
+                            if let Some(input) = folder_input_ref.get() {
+                                set_folder_name.set(input.value());
+                            }
+                        }
+                    />
+                    <button class="btn-primary" type="button"
+                        disabled=move || folder_name.get().is_empty()
+                        on:click=create_folder
+                    >"Create"</button>
+                </div>
+
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
+                    {move || listing.get().map(|res| match res {
+                        Ok(entries) => view! {
+                            <div class="file-list admin-file-list">
+                                {entries.into_iter().map(|(file_type, file_name, _size)| {
+                                    let p = browser_path.get_untracked();
+                                    let rel = if file_name == ".." {
+                                        String::new()
+                                    } else {
+                                        format!("{}{}", p, file_name)
+                                    };
+                                    let is_parent = file_name == "..";
+                                    let is_dir = file_type == "d";
+                                    let display_name = if is_dir { format!("{}/", file_name) } else { file_name.clone() };
+                                    let rel_for_open = rel.clone();
+                                    let rel_for_delete = rel.clone();
+                                    let rel_for_move = rel.clone();
+                                    let rel_for_dir_delete = rel.clone();
+
+                                    view! {
+                                        <div class="admin-file-row">
+                                            <img src={if is_dir { "/assets/folder.png" } else { "/assets/file.png" }} class="file-icon"/>
+                                            <span class="file-name">{display_name}</span>
+                                            <div class="admin-file-actions">
+                                                {if is_parent {
+                                                    view! {
+                                                        <button class="btn-secondary" type="button"
+                                                            on:click=move |_| {
+                                                                let cur = browser_path.get_untracked();
+                                                                let mut parts: Vec<&str> = cur.trim_end_matches('/').split('/').collect();
+                                                                parts.pop();
+                                                                let np = parts.join("/");
+                                                                set_browser_path.set(if np.is_empty() { String::new() } else { format!("{}/", np) });
+                                                            }
+                                                        >"Open"</button>
+                                                    }.into_any()
+                                                } else if is_dir {
+                                                    view! {
+                                                        <button class="btn-secondary" type="button"
+                                                            on:click=move |_| {
+                                                                set_browser_path.update(|p| { p.push_str(&rel_for_open); p.push('/'); });
+                                                            }
+                                                        >"Open"</button>
+                                                        <button class="btn-danger" type="button"
+                                                            on:click=move |_| delete_dir(rel_for_dir_delete.clone())
+                                                        >"Delete"</button>
+                                                    }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <button class="btn-secondary" type="button"
+                                                            on:click=move |_| move_file(rel_for_move.clone())
+                                                        >"Move"</button>
+                                                        <button class="btn-danger" type="button"
+                                                            on:click=move |_| delete_file(rel_for_delete.clone())
+                                                        >"Delete"</button>
+                                                    }.into_any()
+                                                }}
+                                            </div>
+                                        </div>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                        }.into_any(),
+                        Err(e) => view! { <p>"Error: " {e.to_string()}</p> }.into_any(),
+                    })}
+                </Suspense>
+            </div>
+        </div>
+    }.into_any()
+}
+
+fn format_epoch(_secs: u64) -> String {
+    #[cfg(not(feature = "ssr"))]
+    {
+        let now = (js_sys::Date::now() / 1000.0) as u64;
+        if _secs > now {
+            let diff = _secs - now;
+            if diff < 3600 { return format!("in {}m", diff / 60); }
+            if diff < 86400 { return format!("in {}h", diff / 3600); }
+            return format!("in {}d", diff / 86400);
+        } else {
+            let diff = now - _secs;
+            if diff < 60 { return "just now".to_string(); }
+            if diff < 3600 { return format!("{}m ago", diff / 60); }
+            if diff < 86400 { return format!("{}h ago", diff / 3600); }
+            return format!("{}d ago", diff / 86400);
+        }
+    }
+    #[cfg(feature = "ssr")]
+    {
+        String::new()
+    }
 }
 
 #[cfg(feature = "ssr")]

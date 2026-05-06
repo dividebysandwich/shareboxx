@@ -29,10 +29,25 @@ async fn main() -> std::io::Result<()> {
     let routes = generate_route_list(App);
     println!("listening on http://{}", &addr);
 
+    // Initialise the uploads tracking DB so a missing file doesn't surprise
+    // the first upload or expiration sweep.
+    if let Err(e) = shareboxx::db::open() {
+        eprintln!("warning: failed to open uploads.db: {}", e);
+    }
+
     tokio::spawn(async {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             shareboxx::app::ssr_imports::save_stats();
+        }
+    });
+
+    // Daily expiration sweep. Runs an immediate pass on startup so a Pi that
+    // was powered off across a daily boundary still gets caught up.
+    tokio::spawn(async {
+        loop {
+            run_expiration_sweep();
+            tokio::time::sleep(std::time::Duration::from_secs(86_400)).await;
         }
     });
 
@@ -144,6 +159,12 @@ async fn save_files(
     use shareboxx::app::ssr_imports::*;
 
     let mut total_size: u64 = 0;
+    // Reuse a single connection for the whole batch.
+    let db_conn = shareboxx::db::open().ok();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     for f in form.files {
         let file_name = f.file_name.unwrap_or_default();
@@ -176,6 +197,15 @@ async fn save_files(
         if let Ok(meta) = persisted.metadata() {
             total_size += meta.len();
         }
+
+        // Track the upload for expiration. The relative path is what the
+        // serve_file/admin layers operate on, so strip the leading "./files/".
+        if let Some(conn) = db_conn.as_ref() {
+            let rel = new_path.trim_start_matches("./files/").to_string();
+            if let Err(e) = shareboxx::db::record_upload(conn, &rel, now) {
+                eprintln!("warning: failed to record upload {}: {}", rel, e);
+            }
+        }
     }
 
     if total_size > 0 {
@@ -186,6 +216,61 @@ async fn save_files(
     }
 
     Ok(actix_web::HttpResponse::Ok().body("ok"))
+}
+
+#[cfg(feature = "ssr")]
+fn run_expiration_sweep() {
+    let cfg = shareboxx::config::load();
+    if !cfg.expiration_enabled {
+        return;
+    }
+    let conn = match shareboxx::db::open() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("expiration sweep: cannot open db: {}", e);
+            return;
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let max_age = (cfg.expiration_days as u64).saturating_mul(86_400);
+    let cutoff = now.saturating_sub(max_age);
+
+    let tracked = match shareboxx::db::list_tracked(&conn) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("expiration sweep: list failed: {}", e);
+            return;
+        }
+    };
+
+    let mut deleted = 0u32;
+    for (id, rel_path, uploaded_at) in tracked {
+        if uploaded_at >= cutoff {
+            continue;
+        }
+        let full = std::path::PathBuf::from("./files").join(&rel_path);
+        match std::fs::remove_file(&full) {
+            Ok(_) => deleted += 1,
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // File already gone (manual cleanup, move out-of-band) — drop
+                // the row anyway so we don't keep retrying forever.
+            }
+            Err(e) => {
+                eprintln!("expiration sweep: failed to remove {}: {}", rel_path, e);
+                continue;
+            }
+        }
+        if let Err(e) = shareboxx::db::delete_by_id(&conn, id) {
+            eprintln!("expiration sweep: failed to delete row {}: {}", id, e);
+        }
+    }
+
+    if deleted > 0 {
+        println!("expiration sweep: removed {} expired file(s)", deleted);
+    }
 }
 
 #[cfg(feature = "ssr")]
