@@ -286,6 +286,7 @@ fn HomePage() -> impl IntoView {
             .map(|(c, _)| c)
             .unwrap_or(true)
     };
+    let (menu_open, set_menu_open) = signal(false);
 
     // SSE connection for live chat updates and user count
     #[cfg(not(feature = "ssr"))]
@@ -329,14 +330,25 @@ fn HomePage() -> impl IntoView {
         <div class="app">
             <header class="app-header">
                 <h1 class="logo">"ShareBoxx"</h1>
-                <div class="header-right">
+                <div class="header-right" class:nav-open=move || menu_open.get()>
                     <div class="status-badge">
                         <span class="online-dot"></span>
                         {move || user_count.get()}
                         " online"
                     </div>
-                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
-                    <a href="/admin" rel="external" class="header-link">"Admin"</a>
+                    <button
+                        type="button"
+                        class="hamburger"
+                        aria-label="Menu"
+                        aria-expanded=move || if menu_open.get() { "true" } else { "false" }
+                        on:click=move |_| set_menu_open.update(|o| *o = !*o)
+                    >
+                        <span></span><span></span><span></span>
+                    </button>
+                    <nav class="nav-links" on:click=move |_| set_menu_open.set(false)>
+                        <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                        <a href="/admin" rel="external" class="header-link">"Admin"</a>
+                    </nav>
                 </div>
             </header>
 
@@ -1048,6 +1060,7 @@ pub fn ChatComponent(
 fn StatsPage() -> impl IntoView {
     let stats = Resource::new(|| (), |_| get_stats());
     let (user_count, set_user_count) = signal(0u32);
+    let (menu_open, set_menu_open) = signal(false);
 
     // SSE connection: keep the live "online" count fresh on the stats page,
     // matching what the home page shows.
@@ -1077,15 +1090,26 @@ fn StatsPage() -> impl IntoView {
         <div class="app">
             <header class="app-header">
                 <a href="/" rel="external" class="logo">"ShareBoxx"</a>
-                <div class="header-right">
+                <div class="header-right" class:nav-open=move || menu_open.get()>
                     <div class="status-badge">
                         <span class="online-dot"></span>
                         {move || user_count.get()}
                         " online"
                     </div>
-                    <a href="/" rel="external" class="header-link">"Home"</a>
-                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
-                    <a href="/admin" rel="external" class="header-link">"Admin"</a>
+                    <button
+                        type="button"
+                        class="hamburger"
+                        aria-label="Menu"
+                        aria-expanded=move || if menu_open.get() { "true" } else { "false" }
+                        on:click=move |_| set_menu_open.update(|o| *o = !*o)
+                    >
+                        <span></span><span></span><span></span>
+                    </button>
+                    <nav class="nav-links" on:click=move |_| set_menu_open.set(false)>
+                        <a href="/" rel="external" class="header-link">"Home"</a>
+                        <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                        <a href="/admin" rel="external" class="header-link">"Admin"</a>
+                    </nav>
                 </div>
             </header>
             <div class="stats-page">
@@ -1385,6 +1409,7 @@ fn AdminPage() -> impl IntoView {
     let (token, set_token) = signal::<Option<String>>(None);
     let (login_error, set_login_error) = signal(String::new());
     let (action_msg, set_action_msg) = signal(String::new());
+    let (menu_open, set_menu_open) = signal(false);
     let password_ref: NodeRef<Input> = NodeRef::new();
     let admin_status = Resource::new(|| (), |_| admin_status());
 
@@ -1468,12 +1493,23 @@ fn AdminPage() -> impl IntoView {
         <div class="app">
             <header class="app-header">
                 <a href="/" rel="external" class="logo">"ShareBoxx"</a>
-                <div class="header-right">
-                    <a href="/" rel="external" class="header-link">"Home"</a>
-                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
-                    <Show when=move || token.get().is_some() fallback=|| ()>
-                        <button class="header-link header-button" type="button" on:click=on_logout>"Log out"</button>
-                    </Show>
+                <div class="header-right" class:nav-open=move || menu_open.get()>
+                    <button
+                        type="button"
+                        class="hamburger"
+                        aria-label="Menu"
+                        aria-expanded=move || if menu_open.get() { "true" } else { "false" }
+                        on:click=move |_| set_menu_open.update(|o| *o = !*o)
+                    >
+                        <span></span><span></span><span></span>
+                    </button>
+                    <nav class="nav-links" on:click=move |_| set_menu_open.set(false)>
+                        <a href="/" rel="external" class="header-link">"Home"</a>
+                        <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                        <Show when=move || token.get().is_some() fallback=|| ()>
+                            <button class="header-link header-button" type="button" on:click=on_logout>"Log out"</button>
+                        </Show>
+                    </nav>
                 </div>
             </header>
 
