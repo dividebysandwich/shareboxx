@@ -440,12 +440,13 @@ prompt_admin_config() {
     step "Admin password & file expiration"
 
     if [[ "${KEEP_CONFIG:-0}" -eq 1 && -f "$SHAREBOXX_CONFIG_FILE" ]]; then
-        info "Keeping existing $SHAREBOXX_CONFIG_FILE — admin password and"
-        info "expiration settings unchanged. Pass without --keep-config to reset."
+        info "Keeping existing $SHAREBOXX_CONFIG_FILE — admin password,"
+        info "expiration and chat settings unchanged. Pass without --keep-config to reset."
         EXPIRATION_ENABLED=""
         EXPIRATION_DAYS=""
         ADMIN_HASH=""
         ADMIN_SALT=""
+        CHAT_ENABLED=""
         return
     fi
 
@@ -463,6 +464,13 @@ prompt_admin_config() {
     else
         EXPIRATION_ENABLED="false"
         EXPIRATION_DAYS="30"
+    fi
+
+    # Chat toggle (default yes — historical behaviour).
+    if confirm "Enable the in-browser chat panel?" y; then
+        CHAT_ENABLED="true"
+    else
+        CHAT_ENABLED="false"
     fi
 
     # Admin password (twice). Echo suppressed.
@@ -513,6 +521,11 @@ prompt_admin_config() {
     else
         info "File expiration: DISABLED"
     fi
+    if [[ "$CHAT_ENABLED" == "true" ]]; then
+        info "Chat panel: ENABLED"
+    else
+        info "Chat panel: DISABLED"
+    fi
     info "Admin password: set"
 }
 
@@ -529,8 +542,9 @@ write_config_json() {
 
     install -d -m 755 "$SHAREBOXX_HOME"
 
-    local enabled
+    local enabled chat_enabled_json
     if [[ "$EXPIRATION_ENABLED" == "true" ]]; then enabled="true"; else enabled="false"; fi
+    if [[ "$CHAT_ENABLED" == "false" ]]; then chat_enabled_json="false"; else chat_enabled_json="true"; fi
 
     # Use a heredoc so we don't shell-out to jq or python.
     cat > "$SHAREBOXX_CONFIG_FILE" <<JSON
@@ -538,7 +552,8 @@ write_config_json() {
   "expiration_enabled": $enabled,
   "expiration_days": $EXPIRATION_DAYS,
   "admin_password_hash": "$ADMIN_HASH",
-  "admin_salt": "$ADMIN_SALT"
+  "admin_salt": "$ADMIN_SALT",
+  "chat_enabled": $chat_enabled_json
 }
 JSON
 
@@ -702,8 +717,15 @@ configure_iptables_redirect() {
     iptables -A INPUT -i "$IFACE" -p tcp --dport 22 \
         -m comment --comment "shareboxx-ssh-block" -j DROP
 
+    # Client isolation (L3): hostapd's ap_isolate=1 stops L2 frames between
+    # associated stations, but with net.ipv4.ip_forward=1 the kernel could
+    # still route packets between two clients on the AP subnet. Drop any
+    # forwarded traffic where ingress and egress are both the AP interface.
+    iptables -I FORWARD -i "$IFACE" -o "$IFACE" \
+        -m comment --comment "shareboxx-client-isolation" -j DROP
+
     persist_iptables
-    ok "iptables rules configured (HTTP→:3000, SSH blocked on $IFACE)"
+    ok "iptables rules configured (HTTP→:3000, SSH blocked, client isolation on $IFACE)"
 }
 
 # Migrate from the old HTTPS-via-nginx setup. Older installs configured an

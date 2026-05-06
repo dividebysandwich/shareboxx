@@ -899,3 +899,10 @@ input[type="file"] {
   color: var(--text-primary);
   border-color: var(--danger);
 }
+
+.admin-button-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}

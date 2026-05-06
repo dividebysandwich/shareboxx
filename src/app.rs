@@ -278,6 +278,15 @@ fn HomePage() -> impl IntoView {
     let (has_unread, set_has_unread) = signal(false);
     let (file_list_version, set_file_list_version) = signal(0u32);
 
+    let runtime_settings = Resource::new(|| (), |_| get_runtime_settings());
+    let chat_enabled = move || {
+        runtime_settings
+            .get()
+            .and_then(|r| r.ok())
+            .map(|(c, _)| c)
+            .unwrap_or(true)
+    };
+
     // SSE connection for live chat updates and user count
     #[cfg(not(feature = "ssr"))]
     {
@@ -339,19 +348,21 @@ fn HomePage() -> impl IntoView {
                 >
                     "Files"
                 </button>
-                <button
-                    class="tab-btn"
-                    class:active=move || active_tab.get() == ActiveTab::Chat
-                    on:click=move |_| {
-                        set_active_tab.set(ActiveTab::Chat);
-                        set_has_unread.set(false);
-                    }
-                >
-                    "Chat"
-                    <Show when=move || has_unread.get() fallback=|| ()>
-                        <span class="unread-dot"></span>
-                    </Show>
-                </button>
+                <Show when=chat_enabled fallback=|| ()>
+                    <button
+                        class="tab-btn"
+                        class:active=move || active_tab.get() == ActiveTab::Chat
+                        on:click=move |_| {
+                            set_active_tab.set(ActiveTab::Chat);
+                            set_has_unread.set(false);
+                        }
+                    >
+                        "Chat"
+                        <Show when=move || has_unread.get() fallback=|| ()>
+                            <span class="unread-dot"></span>
+                        </Show>
+                    </button>
+                </Show>
             </nav>
 
             <div class="app-content">
@@ -376,8 +387,10 @@ fn HomePage() -> impl IntoView {
                     </div>
                 </div>
 
-                <div class="panel panel-chat" class:active=move || active_tab.get() == ActiveTab::Chat>
-                    <ChatComponent chat_version=chat_version active_tab=active_tab/>
+                <div class="panel panel-chat" class:active=move || chat_enabled() && active_tab.get() == ActiveTab::Chat>
+                    <Show when=chat_enabled fallback=|| ()>
+                        <ChatComponent chat_version=chat_version active_tab=active_tab/>
+                    </Show>
                 </div>
             </div>
         </div>
@@ -815,12 +828,23 @@ pub async fn get_chat_messages() -> Result<Vec<(String, String, u64)>, ServerFnE
     Ok(chat_messages)
 }
 
+#[server]
+pub async fn get_runtime_settings() -> Result<(bool, bool), ServerFnError> {
+    let cfg = crate::config::load();
+    Ok((cfg.chat_enabled, cfg.is_admin_configured()))
+}
+
 #[server(SendChatMessage, "/api")]
 pub async fn send_chat_message(
     chat_name: String,
     chat_message: String,
 ) -> Result<(), ServerFnError> {
     use crate::app::ssr_imports::*;
+
+    let cfg = crate::config::load();
+    if !cfg.chat_enabled {
+        return Err(sfn_err("chat is disabled"));
+    }
 
     logging::log!("Chat message received: {:?}", chat_message);
     let chat_name_clean = if chat_name.is_empty() {
@@ -1023,12 +1047,46 @@ pub fn ChatComponent(
 #[component]
 fn StatsPage() -> impl IntoView {
     let stats = Resource::new(|| (), |_| get_stats());
+    let (user_count, set_user_count) = signal(0u32);
+
+    // SSE connection: keep the live "online" count fresh on the stats page,
+    // matching what the home page shows.
+    #[cfg(not(feature = "ssr"))]
+    {
+        use futures::StreamExt;
+        spawn_local(async move {
+            let Ok(mut source) = gloo_net::eventsource::futures::EventSource::new("/ws") else {
+                return;
+            };
+            let Ok(mut users_stream) = source.subscribe("users") else { return };
+            while let Some(Ok((_event_type, msg))) = users_stream.next().await {
+                if let Some(data_str) = msg.data().as_string() {
+                    if let Ok(count) = data_str.parse::<u32>() {
+                        set_user_count.set(count);
+                    }
+                }
+            }
+        });
+    }
+    #[cfg(feature = "ssr")]
+    {
+        let _ = set_user_count;
+    }
 
     view! {
         <div class="app">
             <header class="app-header">
                 <a href="/" rel="external" class="logo">"ShareBoxx"</a>
-                <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                <div class="header-right">
+                    <div class="status-badge">
+                        <span class="online-dot"></span>
+                        {move || user_count.get()}
+                        " online"
+                    </div>
+                    <a href="/" rel="external" class="header-link">"Home"</a>
+                    <a href="/stats" rel="external" class="header-link">"Stats"</a>
+                    <a href="/admin" rel="external" class="header-link">"Admin"</a>
+                </div>
             </header>
             <div class="stats-page">
                 <h2 class="stats-title">"Server Statistics"</h2>
@@ -1136,6 +1194,48 @@ pub async fn admin_logout(token: String) -> Result<(), ServerFnError> {
 #[server]
 pub async fn admin_check(token: String) -> Result<bool, ServerFnError> {
     Ok(crate::admin_session::validate(&token))
+}
+
+#[server]
+pub async fn admin_get_chat_status(token: String) -> Result<bool, ServerFnError> {
+    require_admin(&token)?;
+    Ok(crate::config::load().chat_enabled)
+}
+
+#[server]
+pub async fn admin_set_chat_enabled(
+    token: String,
+    enabled: bool,
+) -> Result<(), ServerFnError> {
+    require_admin(&token)?;
+    let mut cfg = crate::config::load();
+    cfg.chat_enabled = enabled;
+    crate::config::save(&cfg)
+        .map_err(|e| sfn_err(format!("save config: {}", e)))?;
+    Ok(())
+}
+
+#[server]
+pub async fn admin_clear_chat(token: String) -> Result<(), ServerFnError> {
+    use crate::app::ssr_imports::*;
+
+    require_admin(&token)?;
+    let base_path = std::env::current_dir()
+        .map_err(|e| sfn_err(format!("Error getting current directory: {:?}", e)))?;
+    let chat_file_path = base_path.join("chat.json");
+    let chat_tmp_path = base_path.join("chat.json.tmp");
+
+    let empty: Vec<(String, String, u64)> = Vec::new();
+    let data = serde_json::to_string(&empty)
+        .map_err(|e| sfn_err(format!("Error serializing chat: {:?}", e)))?;
+    std::fs::write(&chat_tmp_path, &data)
+        .map_err(|e| sfn_err(format!("Error writing chat tmp: {:?}", e)))?;
+    std::fs::rename(&chat_tmp_path, &chat_file_path)
+        .map_err(|e| sfn_err(format!("Error renaming chat file: {:?}", e)))?;
+
+    // Notify connected clients to reload — they'll see an empty chat.
+    _ = CHAT_CHANNEL.send(1);
+    Ok(())
 }
 
 /// (id, rel_path, uploaded_at_secs, expires_at_secs_opt)
@@ -1436,6 +1536,7 @@ fn AdminPanel(
     let (data_version, set_data_version) = signal(0u32);
     let (browser_path, set_browser_path) = signal(String::new());
     let (browser_version, set_browser_version) = signal(0u32);
+    let (chat_version, set_chat_version) = signal(0u32);
     let folder_input_ref: NodeRef<Input> = NodeRef::new();
     let (folder_name, set_folder_name) = signal(String::new());
 
@@ -1448,6 +1549,49 @@ fn AdminPanel(
             }
         },
     );
+
+    let chat_status = Resource::new(
+        move || (chat_version.get(), token.get()),
+        |(_, t)| async move {
+            match t {
+                Some(t) => admin_get_chat_status(t).await,
+                None => Err(ServerFnError::ServerError("no token".to_string())),
+            }
+        },
+    );
+
+    let toggle_chat = move |new_state: bool| {
+        let Some(t) = token.get_untracked() else { return };
+        spawn_local(async move {
+            match admin_set_chat_enabled(t, new_state).await {
+                Ok(_) => {
+                    set_action_msg.set(
+                        if new_state { "Chat enabled.".to_string() }
+                        else { "Chat disabled.".to_string() }
+                    );
+                    set_chat_version.update(|v| *v += 1);
+                }
+                Err(e) => set_action_msg.set(format!("Error: {}", e)),
+            }
+        });
+    };
+
+    let clear_chat = move |_| {
+        let Some(t) = token.get_untracked() else { return };
+        #[cfg(not(feature = "ssr"))]
+        {
+            let confirmed = web_sys::window()
+                .and_then(|w| w.confirm_with_message("Clear all chat messages?").ok())
+                .unwrap_or(false);
+            if !confirmed { return; }
+        }
+        spawn_local(async move {
+            match admin_clear_chat(t).await {
+                Ok(_) => set_action_msg.set("Chat cleared.".to_string()),
+                Err(e) => set_action_msg.set(format!("Error: {}", e)),
+            }
+        });
+    };
 
     let listing = Resource::new(
         move || (browser_path.get(), browser_version.get()),
@@ -1572,6 +1716,46 @@ fn AdminPanel(
         <Show when=move || !action_msg.get().is_empty() fallback=|| ()>
             <div class="admin-action-msg">{move || action_msg.get()}</div>
         </Show>
+
+        <div class="card">
+            <div class="card-header"><h2>"Chat controls"</h2></div>
+            <div class="card-body">
+                <Suspense fallback=|| view! { <p class="loading">"Loading..."</p> }>
+                {move || chat_status.get().map(|res| match res {
+                    Ok(enabled) => {
+                        let label = if enabled { "Chat is currently ENABLED." } else { "Chat is currently DISABLED." };
+                        view! {
+                            <p class="text-muted">{label}</p>
+                            <div class="admin-button-row">
+                                {if enabled {
+                                    view! {
+                                        <button class="btn-secondary" type="button"
+                                            on:click=move |_| toggle_chat(false)
+                                        >"Disable chat"</button>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <button class="btn-primary" type="button"
+                                            on:click=move |_| toggle_chat(true)
+                                        >"Enable chat"</button>
+                                    }.into_any()
+                                }}
+                                <button class="btn-danger" type="button"
+                                    on:click=clear_chat
+                                >"Clear chat history"</button>
+                            </div>
+                        }.into_any()
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("unauthorized") {
+                            set_token.set(None);
+                        }
+                        view! { <p>"Error: " {e.to_string()}</p> }.into_any()
+                    }
+                })}
+                </Suspense>
+            </div>
+        </div>
 
         <div class="card">
             <div class="card-header"><h2>"Tracked uploads"</h2></div>

@@ -15,10 +15,16 @@ pub struct Config {
     pub admin_password_hash: String,
     #[serde(default)]
     pub admin_salt: String,
+    #[serde(default = "default_chat_enabled")]
+    pub chat_enabled: bool,
 }
 
 fn default_expiration_days() -> u32 {
     DEFAULT_EXPIRATION_DAYS
+}
+
+fn default_chat_enabled() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -28,6 +34,7 @@ impl Default for Config {
             expiration_days: DEFAULT_EXPIRATION_DAYS,
             admin_password_hash: String::new(),
             admin_salt: String::new(),
+            chat_enabled: true,
         }
     }
 }
@@ -42,6 +49,16 @@ pub fn load() -> Config {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => Config::default(),
     }
+}
+
+/// Persist `cfg` to CWD/config.json (atomic via tmp+rename).
+pub fn save(cfg: &Config) -> std::io::Result<()> {
+    let data = serde_json::to_string_pretty(cfg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let tmp = config_path().with_extension("json.tmp");
+    std::fs::write(&tmp, &data)?;
+    std::fs::rename(&tmp, config_path())?;
+    Ok(())
 }
 
 impl Config {
