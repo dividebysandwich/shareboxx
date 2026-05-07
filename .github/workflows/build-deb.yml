@@ -156,6 +156,10 @@ jobs:
           chown -R shareboxx:shareboxx /var/lib/shareboxx
           chmod 755 /var/lib/shareboxx/files
           systemctl daemon-reload
+          # Enable on boot. Idempotent: a no-op if already enabled.
+          # Done here so even non-interactive installs (where shareboxx-setup
+          # is skipped) survive a reboot once the user runs setup later.
+          systemctl enable shareboxx.service >/dev/null 2>&1 || true
 
           # Run interactive setup only when we have a real terminal AND apt isn't
           # forcing a non-interactive frontend. Otherwise leave configuration to

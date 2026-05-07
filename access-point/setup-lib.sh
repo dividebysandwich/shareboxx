@@ -836,6 +836,12 @@ EOF
 start_services_and_check() {
     step "Starting services"
 
+    # Enable shareboxx so it starts on boot. The .deb postinst doesn't enable
+    # it (only daemon-reload), and we don't want to rely on the source
+    # installer's own enable call — running this here makes the .deb path
+    # boot-persistent too. Idempotent: no-op if already enabled.
+    systemctl enable shareboxx.service 2>/dev/null || true
+
     # shareboxx-ap.service must come up first — its drop-ins guarantee
     # hostapd/dnsmasq won't start until it has applied the IP.
     systemctl restart shareboxx-ap.service
